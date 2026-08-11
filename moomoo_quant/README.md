@@ -166,9 +166,35 @@ python -m moomoo_quant.jobs.shadow_runner --run-once
 
 统一 Runner 先增量更新 SPY / QQQ / GLD / IEF / QUAL / USMV 与 USDJPY 行情缓存，再按 XNYS 日历、America/New_York 时区、DST、各策略检查频率与数据完整性更新 SQLite 影子账本。它不会重发或覆盖冻结的正式回测 run。Signal、Virtual Fill、Equity 和 Reconciliation 都有唯一键，并由文件锁避免并发。它只做本地理论碎股记账，不连接交易账户。
 
-风险检查分为 `SHADOW_SCOPE`、`PROPOSAL_SCOPE` 和始终禁用的 `EXECUTION_SCOPE`。Execution Kill switch 不会阻止本地 Virtual Fill，但陈旧行情、陈旧 FX、错误日历、版本/预算/幂等或 Ledger 不一致都会阻止。
+风险检查分为 `SHADOW_SCOPE`、`PROPOSAL_SCOPE`、独立的 `SIMULATE_SCOPE` 和始终禁用的 `EXECUTION_SCOPE`。Execution Kill switch 不会阻止本地 Virtual Fill，但陈旧行情、陈旧 FX、错误日历、版本/预算/幂等或 Ledger 不一致都会阻止。
 
-`MoomooSimulateExecutionAdapter` 已实现 Mock 边界，但 `MOOMOO_SIMULATE_ENABLED=false` 是默认值。它固定 `TrdEnv.SIMULATE`，没有 REAL 开关，不创建交易 context；只有用户未来单独批准并提供受控 gateway 后才可能进入下一阶段。
+Forward Shadow 与 Moomoo SIMULATE 必须并行保留：Shadow 是确定性的预期账本，记录每个机器人的资金归属、理论成交、佣金/滑点/换汇后的 JPY 净值；SIMULATE 是合并后的券商层执行验证，用来发现账户筛选、碎股、拒单、重复单、成交状态和持仓偏差。三个机器人不会各自下单，Portfolio Manager 只为每个 ETF 发送一张合并净订单。
+
+SIMULATE 默认仍关闭，且拥有独立 Kill switch。第一次只运行只读预检：
+
+```bash
+MOOMOO_SIMULATE_ENABLED=true \
+python -m moomoo_quant.jobs.simulate_runner --preflight
+```
+
+预检必须选中唯一的 active US stock paper account；如果有多个账户，应配置 `MOOMOO_SIMULATE_ACC_ID`。输出和账本只保存不可逆账户指纹，不保存真实账户列表。若模拟账户已有不属于本项目的持仓或订单，bootstrap 会 fail closed。
+
+只有在 XNYS 常规交易时段、行情与 USDJPY 新鲜、预检通过，并同时解除独立模拟 Kill switch 和提供确认口令时才会发送当前 A/B/C 合并建仓单：
+
+```bash
+MOOMOO_SIMULATE_ENABLED=true \
+MOOMOO_SIMULATE_KILL_SWITCH=false \
+python -m moomoo_quant.jobs.simulate_runner --bootstrap --confirm SIMULATE_ONLY
+```
+
+订单固定为 US ETF、long-only、无杠杆的 `TrdEnv.SIMULATE` 市价单。Portfolio Manager 会先按与净 JPY 回放相同的佣金、滑点和自动换汇模型预留现金，不让任何机器人因 100% 目标权重而超出自己的 ¥100,000 预算。重复运行会先检查本地 idempotency key 和券商订单 remark；存在未完成订单时只同步，不叠加新订单。日后只读同步：
+
+```bash
+MOOMOO_SIMULATE_ENABLED=true \
+python -m moomoo_quant.jobs.simulate_runner --sync
+```
+
+不要把这三个命令放入公网 Dashboard。`EXECUTION_SCOPE` 继续硬拒绝，代码没有 REAL gateway，也不调用交易解锁。
 
 服务器没有可用 OpenD 时，可只读取现有缓存：
 

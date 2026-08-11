@@ -174,12 +174,23 @@ STATUS_NAMES = {
     "RESEARCH_INVALID": "研究证据无效",
     "SHADOW_READY": "已通过统一准入",
     "PROPOSED_ONLY": "拟议订单（不会发送）",
+    "SIMULATE_PROPOSED": "待发送模拟订单",
     "REJECTED": "已拒绝",
     "APPROVED_FOR_PROPOSAL": "仅批准生成拟议订单",
+    "APPROVED_FOR_SIMULATE": "允许发送模拟订单",
     "APPROVED_FOR_SHADOW": "允许本地影子记账",
     "WAITING_FOR_OPEN": "等待下一交易日开盘",
     "VIRTUAL_FILLED": "已完成本地假想成交",
     "RECONCILED": "已对账",
+    "PREFLIGHT_OK": "模拟账户预检通过",
+    "FOREIGN_ACTIVITY": "模拟账户存在非本项目持仓/订单",
+    "WAITING_MARKET_OPEN": "等待美股常规交易时段",
+    "WAITING_OPEN_ORDERS": "等待已有模拟订单完成",
+    "SUBMITTED": "已发送至模拟账户",
+    "PARTIALLY_FILLED": "模拟账户部分成交",
+    "FILLED": "模拟账户已成交",
+    "CANCELLED": "模拟订单已取消",
+    "SYNCED": "模拟账户已同步",
 }
 
 
@@ -743,7 +754,10 @@ def portfolio_overview(
 
 def merged_holdings(data: dict, multi: dict, defensive_factor: dict, risk_parity: dict) -> None:
     st.title("合并理论持仓")
-    st.warning("Portfolio Manager 已按机器人预算合并目标；当前只展示理论数量，不发送订单。")
+    if multi["broker_orders"].empty:
+        st.warning("Portfolio Manager 已按机器人预算合并目标；尚无 Moomoo 模拟订单。")
+    else:
+        st.info("Portfolio Manager 只发送合并净订单；下表仍保留各机器人贡献，用于影子账本归属与模拟账户对账。")
     current = data["current"].iloc[-1]
     factor_latest = defensive_factor.get("summary", {}).get("latest_target", {})
     parity_latest = risk_parity.get("summary", {}).get("latest_target", {})
@@ -798,7 +812,7 @@ def merged_holdings(data: dict, multi: dict, defensive_factor: dict, risk_parity
                 "理论差额数量": target_quantity - current_quantity,
                 "贡献机器人": "、".join(item["机器人"] for item in contributions[symbol]) or "无",
                 "目标数据日期": dates[symbol],
-                "订单状态": "未生成（Kill switch 开启）",
+                "订单状态": "尚无模拟订单" if multi["broker_orders"].empty else "请在运行与安全页查看",
             }
         )
     holdings = pd.DataFrame(rows)
@@ -1079,9 +1093,9 @@ def robot_comparison(data: dict, defensive_factor: dict, risk_parity: dict, mult
 
 def safety_records(multi: dict) -> None:
     st.title("运行与安全")
-    st.error("拟议订单（仅理论计算，不会发送）")
-    st.write("Moomoo SIMULATE：已实现，等待用户单独批准启用。当前固定配置为关闭，页面没有启用入口。")
-    st.caption("Execution Scope 始终禁用；不读取交易账户，不解锁交易，不发送任何订单。")
+    st.info("Forward Shadow 与 Moomoo SIMULATE 并行：前者保存策略应有信号、成本后 JPY 净值和机器人归属；后者验证 OpenD 下单、拒单、碎股、成交与持仓同步。")
+    st.write("Moomoo SIMULATE：已获得单独批准，但必须在服务器命令行通过启用变量、独立模拟 Kill switch 和确认口令三重门控。网页没有启用或下单按钮。")
+    st.caption("REAL Execution Scope 仍永久禁用；不存在 REAL 适配器，不调用交易解锁。")
     st.subheader("风险决策")
     if multi["risk"].empty:
         st.info("尚无风险决策记录。")
@@ -1096,9 +1110,35 @@ def safety_records(multi: dict) -> None:
         proposals = multi["proposals"].sort_values("created_at", ascending=False).copy()
         proposals["status"] = proposals["status"].map(lambda value: STATUS_NAMES.get(value, value))
         st.dataframe(proposals, hide_index=True, width="stretch")
+    st.subheader("Moomoo 模拟订单")
+    if multi["broker_orders"].empty:
+        st.info("尚无模拟订单。先在部署服务器运行只读 preflight；只有显式 bootstrap 才会发送。")
+    else:
+        broker_orders = multi["broker_orders"].sort_values("created_at", ascending=False).copy()
+        broker_orders["status"] = broker_orders["status"].map(lambda value: STATUS_NAMES.get(value, value))
+        broker_orders = broker_orders.drop(columns=["details_json"], errors="ignore")
+        st.dataframe(broker_orders, hide_index=True, width="stretch")
+    st.subheader("模拟账户预检与对账")
+    simulate_reconciliation = multi["reconciliations"]
+    if not simulate_reconciliation.empty:
+        simulate_reconciliation = simulate_reconciliation[
+            simulate_reconciliation["reconciliation_id"].astype(str).str.startswith("simulate-")
+        ].sort_values("checked_at", ascending=False)
+    if simulate_reconciliation.empty:
+        st.info("尚无 SIMULATE preflight / sync 记录。")
+    else:
+        display_reconciliation = simulate_reconciliation.copy()
+        display_reconciliation["status"] = display_reconciliation["status"].map(
+            lambda value: STATUS_NAMES.get(value, value)
+        )
+        st.dataframe(
+            display_reconciliation.drop(columns=["details_json"], errors="ignore"),
+            hide_index=True,
+            width="stretch",
+        )
     st.subheader("生命周期")
     st.dataframe(multi["lifecycle"], hide_index=True, width="stretch")
-    st.caption("不存在自动生命周期升级。SIMULATE 适配器默认禁用；本项目没有 REAL 适配器。")
+    st.caption("Shadow 不会因启用 SIMULATE 而关闭；二者是预期账本与券商执行验证的双轨记录。本项目没有 REAL 适配器。")
     st.subheader("Forward Shadow Runner")
     if multi["runner_events"].empty:
         st.info("尚无前向事件。Robot A / C 等待月末；Robot B 等待半年末。")

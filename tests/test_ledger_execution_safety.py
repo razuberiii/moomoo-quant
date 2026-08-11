@@ -143,8 +143,10 @@ def test_duplicate_proposed_order_is_idempotent(tmp_path):
         {"SPY": MarketPrice("SPY", 500, 150, now, now)}, {}, 100_000,
     )[0]
     service = ProposedOrderService(ledger)
-    assert service.create("portfolio", target, _approved_risk()) is not None
-    assert service.create("portfolio", target, _approved_risk()) is None
+    first = service.create("portfolio", target, _approved_risk())
+    second = service.create("portfolio", target, _approved_risk())
+    assert first is not None
+    assert second == first
     assert len(ledger.rows("proposed_orders")) == 1
 
 
@@ -182,15 +184,18 @@ def test_all_strategy_definitions_use_jpy_reporting(tmp_path):
 
 def test_no_executable_broker_trading_symbols():
     package = Path(config.BASE_DIR)
-    banned_names = {"place_order", "unlock_trade", "OpenSecTradeContext"}
+    simulate_gateway = package / "trading" / "moomoo_simulate_gateway.py"
     violations = []
     for path in package.rglob("*.py"):
         if "__pycache__" in path.parts:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, (ast.Name, ast.Attribute)) and getattr(node, "id", getattr(node, "attr", None)) in banned_names:
-                violations.append(f"{path.name}:{node.lineno}")
+            name = getattr(node, "id", getattr(node, "attr", None))
+            if name == "unlock_trade":
+                violations.append(f"{path.name}:{node.lineno}:unlock")
+            if name in {"place_order", "OpenSecTradeContext", "get_acc_list"} and path != simulate_gateway:
+                violations.append(f"{path.name}:{node.lineno}:{name}")
             if isinstance(node, ast.Attribute) and node.attr == "REAL":
-                violations.append(f"{path.name}:{node.lineno}")
+                violations.append(f"{path.name}:{node.lineno}:live-env")
     assert violations == []

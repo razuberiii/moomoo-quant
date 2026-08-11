@@ -31,6 +31,9 @@ class SimulateGateway(Protocol):
     ) -> dict:
         """Submit through a caller-supplied fake or separately approved gateway."""
 
+    def query_simulated_order(self, order_id: str) -> dict:
+        """Read one paper order from the selected paper account."""
+
 
 @dataclass(frozen=True)
 class SimulateSubmission:
@@ -40,11 +43,7 @@ class SimulateSubmission:
 
 
 class MoomooSimulateExecutionAdapter:
-    """Disabled-by-default boundary for a future, explicit SIMULATE approval.
-
-    This class never creates an OpenD trading context. Tests inject a fake gateway;
-    production configuration remains disabled and has no gateway implementation.
-    """
+    """Explicit, SIMULATE-only submission boundary with ledger idempotency."""
 
     trading_environment = SIMULATE_ENVIRONMENT
 
@@ -55,7 +54,7 @@ class MoomooSimulateExecutionAdapter:
         *,
         enabled: bool = config.MOOMOO_SIMULATE_ENABLED,
         requested_environment: object = SIMULATE_ENVIRONMENT,
-        symbol_allowlist: frozenset[str] = frozenset({"US.SPY", "US.QQQ", "US.GLD", "US.IEF", "US.QUAL", "US.USMV"}),
+        symbol_allowlist: frozenset[str] = config.MOOMOO_SIMULATE_ALLOWED_SYMBOLS,
         strategy_allowlist: frozenset[str] = frozenset(),
         maximum_quantity: float = 10_000.0,
     ):
@@ -80,8 +79,8 @@ class MoomooSimulateExecutionAdapter:
             raise SimulateExecutionDisabled(
                 "MOOMOO_SIMULATE_ENABLED=false; separate user approval is required"
             )
-        if risk.scope is not RiskScope.PROPOSAL_SCOPE or risk.status is not RiskStatus.APPROVED_FOR_PROPOSAL:
-            raise SimulateSafetyError("Portfolio and PROPOSAL_SCOPE risk approval are required")
+        if risk.scope is not RiskScope.SIMULATE_SCOPE or risk.status is not RiskStatus.APPROVED_FOR_SIMULATE:
+            raise SimulateSafetyError("Portfolio and SIMULATE_SCOPE risk approval are required")
         if order.symbol not in self.symbol_allowlist:
             raise SimulateSafetyError(f"Symbol is not allowlisted: {order.symbol}")
         if strategy_id not in self.strategy_allowlist:
@@ -110,3 +109,24 @@ class MoomooSimulateExecutionAdapter:
             order.side, order.theoretical_quantity, status.value, order_id, response,
         )
         return SimulateSubmission(order_id, status, order.idempotency_key)
+
+    def sync(self, idempotency_key: str) -> SimulateSubmission:
+        existing = self.ledger.broker_order_by_key(idempotency_key)
+        if not existing or not existing.get("order_id"):
+            raise SimulateSafetyError("No submitted SIMULATE order is available for sync")
+        response = self.gateway.query_simulated_order(str(existing["order_id"]))
+        status = BrokerOrderStatus(response.get("status", BrokerOrderStatus.REJECTED.value))
+        self.ledger.record_broker_order_event(
+            existing["rebalance_id"],
+            idempotency_key,
+            existing["strategy_id"],
+            existing["symbol"],
+            existing["side"],
+            float(existing["quantity"]),
+            status.value,
+            response.get("order_id") or existing["order_id"],
+            response,
+        )
+        return SimulateSubmission(
+            response.get("order_id") or existing["order_id"], status, idempotency_key
+        )

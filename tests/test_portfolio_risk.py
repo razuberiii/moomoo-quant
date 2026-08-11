@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from moomoo_quant.multi_strategy.models import MarketPrice, RiskInput, RiskStatus, TargetRequest
+from moomoo_quant.multi_strategy.models import MarketPrice, RiskInput, RiskScope, RiskStatus, TargetRequest
 from moomoo_quant.multi_strategy.portfolio import PortfolioError, aggregate_targets
 from moomoo_quant.multi_strategy.risk import evaluate_risk
 
@@ -97,3 +97,12 @@ def test_kill_switch_rejects_proposal():
 def test_clean_risk_input_only_approves_proposal():
     decision = evaluate_risk(risk_input(), NOW)
     assert decision.status is RiskStatus.APPROVED_FOR_PROPOSAL
+
+
+def test_simulate_scope_requires_its_own_approval_and_kill_switch():
+    approved = evaluate_risk(risk_input(), NOW, RiskScope.SIMULATE_SCOPE)
+    blocked = evaluate_risk(risk_input(kill_switch=True), NOW, RiskScope.SIMULATE_SCOPE)
+    assert approved.status is RiskStatus.APPROVED_FOR_SIMULATE
+    assert approved.scope is RiskScope.SIMULATE_SCOPE
+    assert blocked.status is RiskStatus.REJECTED
+    assert "KILL_SWITCHED" in blocked.reasons

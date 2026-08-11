@@ -22,6 +22,9 @@ class FakeGateway:
         self.calls.append(kwargs)
         return {"order_id": "fake-1", "status": "SUBMITTED"}
 
+    def query_simulated_order(self, order_id):
+        return {"order_id": order_id, "status": "FILLED"}
+
 
 def order():
     now = datetime.now(timezone.utc)
@@ -29,7 +32,7 @@ def order():
 
 
 def approved():
-    return RiskDecision("r1", RiskStatus.APPROVED_FOR_PROPOSAL, (), datetime.now(timezone.utc), "snap", "v1", RiskScope.PROPOSAL_SCOPE)
+    return RiskDecision("r1", RiskStatus.APPROVED_FOR_SIMULATE, (), datetime.now(timezone.utc), "snap", "v1", RiskScope.SIMULATE_SCOPE)
 
 
 def test_adapter_explicitly_fixes_simulate_environment(tmp_path):
@@ -64,20 +67,24 @@ def test_mock_submission_is_idempotent_and_passes_simulate_explicitly(tmp_path):
     assert gateway.calls[0]["trading_environment"] == SIMULATE_ENVIRONMENT
 
 
-def test_no_trade_account_or_unlock_api_is_executable():
-    banned = {"get_acc_list", "unlock_trade", "place_order", "OpenSecTradeContext"}
+def test_trade_api_is_confined_to_simulate_gateway_and_unlock_is_absent():
+    gateway_path = config.BASE_DIR / "trading" / "moomoo_simulate_gateway.py"
     violations = []
     for path in config.BASE_DIR.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             name = getattr(node, "id", getattr(node, "attr", None))
-            if name in banned:
+            if name == "unlock_trade":
                 violations.append((path.name, node.lineno, name))
+            if name in {"get_acc_list", "place_order", "OpenSecTradeContext"} and path != gateway_path:
+                violations.append((path.name, node.lineno, name))
+            if isinstance(node, ast.Attribute) and node.attr == "REAL":
+                violations.append((path.name, node.lineno, "live-env"))
     assert violations == []
 
 
 def test_dashboard_has_status_text_but_no_enable_control():
     source = (config.BASE_DIR / "dashboard.py").read_text(encoding="utf-8")
-    assert "Moomoo SIMULATE：已实现，等待用户单独批准启用" in source
-    assert "启用 SIMULATE" not in source
+    assert "Moomoo SIMULATE" in source
+    assert 'st.button("启用 SIMULATE"' not in source
     assert "MOOMOO_SIMULATE_ENABLED=false" not in source

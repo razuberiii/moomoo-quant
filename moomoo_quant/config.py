@@ -71,13 +71,18 @@ PORTFOLIO_ID = "jpy-shadow-portfolio-v1"
 PORTFOLIO_CAPITAL_JPY = 100_000.0
 TREND_STRATEGY_ID = "jpy-multi-asset-trend"
 MEAN_REVERSION_STRATEGY_ID = "us-etf-short-term-mean-reversion"
-RISK_POLICY_VERSION = "proposal-only-v1"
+RISK_POLICY_VERSION = "shadow-proposal-simulate-v2"
 BACKTEST_ENGINE_VERSION = "trend-engine-v1.0"
 COST_MODEL_VERSION = "moomoo-jp-basic-v1"
 ADMISSION_POLICY_VERSION = "strategy-admission-v1"
 QUANT_ADMIN_MODE = os.environ.get("QUANT_ADMIN_MODE", "false").lower() == "true"
 KILL_SWITCH = os.environ.get("QUANT_KILL_SWITCH", "true").lower() == "true"
 MOOMOO_SIMULATE_ENABLED = os.environ.get("MOOMOO_SIMULATE_ENABLED", "false").lower() == "true"
+MOOMOO_SIMULATE_KILL_SWITCH = os.environ.get("MOOMOO_SIMULATE_KILL_SWITCH", "true").lower() == "true"
+MOOMOO_SIMULATE_ACC_ID = os.environ.get("MOOMOO_SIMULATE_ACC_ID", "").strip()
+MOOMOO_SIMULATE_ALLOWED_SYMBOLS = frozenset(
+    {"US.SPY", "US.QQQ", "US.GLD", "US.IEF", "US.QUAL", "US.USMV"}
+)
 
 # US ETF Short-Term Mean Reversion v1 pre-registered parameters. These values
 # intentionally match the existing baseline and must not be tuned in v1.
