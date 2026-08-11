@@ -1,0 +1,15 @@
+[Unit]
+Description=Observe Moomoo SIMULATE around US market open and close
+
+[Timer]
+# Two UTC windows cover New York daylight and standard time; the runner itself
+# checks the XNYS calendar and becomes a no-op outside the regular session.
+OnCalendar=Mon..Fri *-*-* 13:40:00 UTC
+OnCalendar=Mon..Fri *-*-* 14:40:00 UTC
+OnCalendar=Mon..Fri *-*-* 20:15:00 UTC
+OnCalendar=Mon..Fri *-*-* 21:15:00 UTC
+Persistent=true
+Unit=moomoo-quant-simulate.service
+
+[Install]
+WantedBy=timers.target

@@ -216,7 +216,11 @@ class OpenDSimulateGateway:
             total_assets_usd=float(asset.get("total_assets", 0.0) or 0.0),
             positions=_clean_records(
                 positions[positions["qty"].astype(float).abs() > 1e-10] if not positions.empty else positions,
-                ("code", "qty", "can_sell_qty", "average_cost", "market_val", "position_side"),
+                (
+                    "code", "qty", "can_sell_qty", "average_cost", "nominal_price",
+                    "market_val", "pl_val", "pl_ratio", "unrealized_pl", "realized_pl",
+                    "currency", "position_side",
+                ),
             ),
             open_orders=_clean_records(
                 orders,

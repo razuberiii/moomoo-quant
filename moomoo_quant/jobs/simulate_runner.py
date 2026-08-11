@@ -54,23 +54,45 @@ def _current_requests(ledger) -> list[TargetRequest]:
             {f"US.{symbol}": float(parity.get(f"{symbol}_weight", 0.0)) for symbol in ("SPY", "GLD", "IEF")},
         ),
     )
+    recorded_signals = ledger.rows("signals")
+    recorded_allocations = ledger.rows("target_allocations")
     requests = []
     for strategy_id, version, signal_date, weights in specifications:
         account = ledger.strategy_account(strategy_id, version)
         budget = float(account["allocated_capital_jpy"])
         if budget <= 0:
             continue
+        candidates = [
+            row for row in recorded_signals
+            if row["strategy_id"] == strategy_id and str(row["strategy_version"]) == version
+        ]
+        latest = max(candidates, key=lambda row: (row["signal_date"], row["created_at"]), default=None)
+        signal_id = f"simulate-baseline:{strategy_id}:v{version}:{signal_date}"
+        if latest and str(latest["signal_date"]) > signal_date:
+            signal_id = str(latest["signal_id"])
+            signal_date = str(latest["signal_date"])
+            weights = {
+                str(row["symbol"]) if str(row["symbol"]).startswith("US.") else f"US.{row['symbol']}":
+                float(row["target_weight"])
+                for row in recorded_allocations
+                if row["signal_id"] == signal_id
+            }
         requests.append(
             TargetRequest(
                 strategy_id=strategy_id,
                 strategy_version=version,
-                signal_id=f"simulate-baseline:{strategy_id}:v{version}:{signal_date}",
+                signal_id=signal_id,
                 allocated_capital_jpy=budget,
                 cash_jpy=budget,
                 target_weights={symbol: weight for symbol, weight in weights.items() if weight > 0},
             )
         )
     return requests
+
+
+def _target_digest(requests: list[TargetRequest]) -> str:
+    canonical = "|".join(sorted(request.signal_id for request in requests))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 def _latest_fx() -> tuple[float, datetime]:
@@ -266,6 +288,7 @@ def run_bootstrap(
     gateway: OpenDSimulateGateway | None = None,
     *,
     now: datetime | None = None,
+    cycle_type: str = "BOOTSTRAP",
 ) -> dict:
     if confirmation != CONFIRMATION:
         raise SimulateSafetyError(f"Explicit --confirm {CONFIRMATION} is required")
@@ -281,15 +304,26 @@ def run_bootstrap(
     if preflight.open_orders:
         synced = run_sync(gateway)
         return {"state": "WAITING_OPEN_ORDERS", "open_orders": preflight.public_dict()["open_orders"], "sync": synced}
+    requests = _current_requests(ledger)
+    target_digest = _target_digest(requests)
+    source_signals = [request.signal_id for request in requests]
+    if ledger.simulate_target_processed(target_digest):
+        ledger.record_simulate_cycle_event(
+            target_digest, cycle_type, "NO_NEW_SIGNAL", source_signals, {"reason": "TARGET_ALREADY_PROCESSED"}
+        )
+        return {"state": "NO_NEW_SIGNAL", "target_digest": target_digest}
+
     current_time = now or datetime.now(timezone.utc)
     if not _market_is_open(current_time):
         details = {**preflight.public_dict(), "reason": "XNYS_CLOSED"}
         ledger.record_simulate_reconciliation(
             f"simulate-bootstrap:{current_time.date().isoformat()}", "WAITING_MARKET_OPEN", details
         )
+        ledger.record_simulate_cycle_event(
+            target_digest, cycle_type, "WAITING_MARKET_OPEN", source_signals, details
+        )
         return {"state": "WAITING_MARKET_OPEN", **details}
 
-    requests = _current_requests(ledger)
     symbols = sorted({symbol for request in requests for symbol in request.target_weights})
     prices = _market_prices(symbols)
     requests = _reserve_modeled_execution_costs(requests, prices)
@@ -309,10 +343,7 @@ def run_bootstrap(
         )
         for target in targets
     ]
-    target_digest = hashlib.sha256(
-        "|".join(sorted(request.signal_id for request in requests)).encode("utf-8")
-    ).hexdigest()[:12]
-    snapshot_id = f"simulate-bootstrap:{current_time.date().isoformat()}:{target_digest}"
+    snapshot_id = f"simulate-{cycle_type.lower()}:{current_time.date().isoformat()}:{target_digest}"
     budget_usage = {
         request.strategy_id: request.allocated_capital_jpy * sum(request.target_weights.values())
         for request in requests
@@ -364,6 +395,10 @@ def run_bootstrap(
         targets,
     )
     if decision.status is not RiskStatus.APPROVED_FOR_SIMULATE:
+        ledger.record_simulate_cycle_event(
+            target_digest, cycle_type, "RISK_REJECTED", source_signals,
+            {"snapshot_id": snapshot_id, "reasons": list(decision.reasons)},
+        )
         return {"state": "RISK_REJECTED", "reasons": list(decision.reasons)}
 
     proposal_service = ProposedOrderService(ledger)
@@ -393,9 +428,35 @@ def run_bootstrap(
                 "status": submission.status.value,
             }
         )
-    state = "SUBMITTED" if submissions else "ALREADY_AT_TARGET"
+    rejected = any(item["status"] in {"REJECTED", "CANCELLED"} for item in submissions)
+    state = "ORDER_REJECTED" if rejected else ("SUBMITTED" if submissions else "ALREADY_AT_TARGET")
     ledger.record_simulate_reconciliation(snapshot_id, state, {"submissions": submissions})
+    ledger.record_simulate_cycle_event(
+        target_digest, cycle_type, state, source_signals,
+        {"snapshot_id": snapshot_id, "submissions": submissions},
+    )
     return {"state": state, "snapshot_id": snapshot_id, "submissions": submissions}
+
+
+def run_auto(
+    gateway: OpenDSimulateGateway | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    """Sync paper state and rebalance only after a genuinely new combined signal."""
+    if not config.MOOMOO_SIMULATE_AUTO_ENABLED:
+        raise SimulateSafetyError("MOOMOO_SIMULATE_AUTO_ENABLED must be true")
+    if not config.MOOMOO_SIMULATE_ENABLED:
+        raise SimulateSafetyError("MOOMOO_SIMULATE_ENABLED must be true")
+    if config.MOOMOO_SIMULATE_KILL_SWITCH:
+        raise SimulateSafetyError("MOOMOO_SIMULATE_KILL_SWITCH is still true")
+    ledger = initialize_multi_strategy_ledger(include_research_slots=True)
+    if not ledger.has_simulate_bootstrap():
+        return {"state": "NEEDS_BOOTSTRAP"}
+    gateway = gateway or OpenDSimulateGateway()
+    if ledger.rows("broker_order_records"):
+        run_sync(gateway)
+    return run_bootstrap(CONFIRMATION, gateway, now=now, cycle_type="AUTO")
 
 
 def main() -> None:
@@ -404,12 +465,15 @@ def main() -> None:
     mode.add_argument("--preflight", action="store_true", help="Read-only account/position/order checks")
     mode.add_argument("--bootstrap", action="store_true", help="Build the current combined paper portfolio")
     mode.add_argument("--sync", action="store_true", help="Synchronize recorded paper orders and positions")
+    mode.add_argument("--auto", action="store_true", help="Sync and rebalance only for a new strategy signal")
     parser.add_argument("--confirm", default="", help=f"Bootstrap requires the literal {CONFIRMATION}")
     args = parser.parse_args()
     if args.preflight:
         result = run_preflight()
     elif args.sync:
         result = run_sync()
+    elif args.auto:
+        result = run_auto()
     else:
         result = run_bootstrap(args.confirm)
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, default=str))
