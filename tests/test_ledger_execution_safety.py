@@ -46,9 +46,36 @@ def test_immutable_admission_can_fund_a_pristine_existing_research_account_once(
     account = migrated.strategy_account(config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
     assert account["allocated_capital_jpy"] == 100_000
     assert account["cash_jpy"] == 100_000
+    transitions = [
+        row for row in migrated.rows("lifecycle_events")
+        if row["strategy_id"] == config.DEFENSIVE_FACTOR_STRATEGY_ID
+        and row["to_stage"] == LifecycleStage.SHADOW.value
+    ]
+    assert len(transitions) == 1
+    assert transitions[0]["from_stage"] == LifecycleStage.RESEARCH.value
+    assert transitions[0]["approved_by"] == "ADMISSION_POLICY"
     restarted = initialize_multi_strategy_ledger(path, include_research_slots=True)
     account = restarted.strategy_account(config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
     assert account["cash_jpy"] == 100_000
+    assert len([
+        row for row in restarted.rows("lifecycle_events")
+        if row["strategy_id"] == config.DEFENSIVE_FACTOR_STRATEGY_ID
+        and row["to_stage"] == LifecycleStage.SHADOW.value
+    ]) == 1
+
+
+def test_restart_preserves_funded_strategy_runtime_status(tmp_path):
+    path = tmp_path / "ledger.db"
+    ledger = initialize_multi_strategy_ledger(path, include_research_slots=True)
+    account = ledger.strategy_account(config.TREND_STRATEGY_ID, "1")
+    with ledger.connect() as conn:
+        conn.execute(
+            "UPDATE strategy_accounts SET status=? WHERE account_id=?",
+            ("RECONCILED", account["account_id"]),
+        )
+
+    restarted = initialize_multi_strategy_ledger(path, include_research_slots=True)
+    assert restarted.strategy_account(config.TREND_STRATEGY_ID, "1")["status"] == "RECONCILED"
 
 
 def test_legacy_baseline_does_not_create_fill(tmp_path):

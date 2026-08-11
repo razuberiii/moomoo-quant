@@ -238,7 +238,7 @@ class ShadowLedger:
                     now,
                 ),
             )
-            conn.execute(
+            account_insert = conn.execute(
                 "INSERT OR IGNORE INTO strategy_accounts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     account_id,
@@ -252,24 +252,25 @@ class ShadowLedger:
                     now,
                 ),
             )
-            conn.execute(
-                "INSERT OR IGNORE INTO strategy_budgets VALUES (?, ?, ?, ?, ?)",
-                (f"budget:{account_id}:initial", account_id, allocated_capital_jpy, now, "config.py"),
-            )
-            conn.execute(
-                "INSERT OR IGNORE INTO lifecycle_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    f"lifecycle:{definition.strategy_id}:{stage.value}:initial",
-                    definition.strategy_id,
-                    None,
-                    stage.value,
-                    now,
-                    "USER_POLICY",
-                    evidence_run_id,
-                    "Initial explicit lifecycle registration",
-                    None,
-                ),
-            )
+            if account_insert.rowcount == 1:
+                conn.execute(
+                    "INSERT INTO strategy_budgets VALUES (?, ?, ?, ?, ?)",
+                    (f"budget:{account_id}:initial", account_id, allocated_capital_jpy, now, "config.py"),
+                )
+                conn.execute(
+                    "INSERT INTO lifecycle_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        f"lifecycle:{definition.strategy_id}:{stage.value}:initial",
+                        definition.strategy_id,
+                        None,
+                        stage.value,
+                        now,
+                        "USER_POLICY",
+                        evidence_run_id,
+                        "Initial explicit lifecycle registration",
+                        None,
+                    ),
+                )
 
     def apply_admission_budget(self, admission: dict, runtime_status: str) -> bool:
         """Apply an immutable SHADOW admission to a previously empty account.
@@ -292,13 +293,11 @@ class ShadowLedger:
                 raise KeyError(f"Unknown strategy account: {strategy_id} v{version}")
             current = float(account["allocated_capital_jpy"])
             if abs(current - target) <= 1e-8:
-                conn.execute(
-                    "UPDATE strategy_accounts SET status=?, updated_at=? WHERE account_id=?",
-                    (runtime_status, now, account["account_id"]),
-                )
                 return False
             if current != 0.0:
                 raise RuntimeError("Admission cannot resize an already funded strategy")
+            if abs(float(account["cash_jpy"])) > 1e-8:
+                raise RuntimeError("Cannot fund a research account with nonzero cash")
             activity = conn.execute(
                 """
                 SELECT
@@ -336,6 +335,20 @@ class ShadowLedger:
                     "ADMISSION_CAPITAL",
                     admission["admission_id"],
                     now,
+                ),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO lifecycle_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"lifecycle:{strategy_id}:SHADOW:{admission['admission_id']}",
+                    strategy_id,
+                    LifecycleStage.RESEARCH.value,
+                    LifecycleStage.SHADOW.value,
+                    now,
+                    "ADMISSION_POLICY",
+                    admission["evidence_run_id"],
+                    f"Funded by immutable admission {admission['admission_id']}",
+                    None,
                 ),
             )
         return True
