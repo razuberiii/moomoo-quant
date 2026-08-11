@@ -91,6 +91,23 @@ def initialize_multi_strategy_ledger(
         status="WAITING_NEXT_MONTH_END" if risk_shadow else risk_parity_status,
         evidence_run_id=(risk_summary or {}).get("run_id"),
     )
+    factor_summary = _research_summary("defensive_factor_v2_research.json")
+    factor_status = (factor_summary or {}).get("status", "RESEARCH_PENDING")
+    factor_shadow = factor_status == "SHADOW"
+    ledger.register_strategy(
+        StrategyDefinition(
+            strategy_id=config.DEFENSIVE_FACTOR_STRATEGY_ID,
+            name="US Quality & Low Volatility",
+            version="2",
+            signal_currency="JPY",
+            benchmark_ids=("spy-buy-hold-jpy",),
+        ),
+        portfolio_id=config.PORTFOLIO_ID,
+        allocated_capital_jpy=100_000.0 if factor_shadow else 0.0,
+        stage=LifecycleStage.SHADOW if factor_shadow else LifecycleStage.RESEARCH,
+        status="WAITING_NEXT_HALF_YEAR_END" if factor_shadow else factor_status,
+        evidence_run_id=(factor_summary or {}).get("run_id"),
+    )
     return ledger
 
 

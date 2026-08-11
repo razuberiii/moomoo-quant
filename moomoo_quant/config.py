@@ -3,8 +3,6 @@ import json
 import os
 from pathlib import Path
 
-from moomoo import AuType, KLType
-
 BASE_DIR = Path(__file__).resolve().parent
 PERSISTENT_ROOT = Path(os.environ.get("MOOMOO_QUANT_DATA_ROOT", BASE_DIR))
 DATA_DIR = PERSISTENT_ROOT / "data"
@@ -21,8 +19,11 @@ OPEND_PORT = 11112
 SYMBOLS = ["US.SPY", "US.QQQ", "US.AAPL"]
 BACKTEST_SYMBOL = "US.SPY"
 BACKTEST_START = "2018-01-01"
-KLINE_TYPE = KLType.K_DAY
-ADJUST_TYPE = AuType.QFQ
+# Keep the offline configuration import free of OpenD SDK side effects.  The
+# SDK accepts these exact string values and converts them to protocol enums at
+# the quote-context boundary.
+KLINE_TYPE = "K_DAY"
+ADJUST_TYPE = "qfq"
 MAX_KLINE_COUNT = 1000
 
 INITIAL_CASH_USD = 700.0
@@ -159,3 +160,70 @@ RISK_PARITY_V1 = {
     },
 }
 RISK_PARITY_V1_HASH = stable_config_hash(RISK_PARITY_V1)
+
+
+# Robot B v1 is deliberately a different edge from Robot A's time-series
+# trend and Robot C's cross-asset inverse-volatility allocation.  It owns
+# three transparent US equity factor ETFs at fixed weights and rebalances only
+# at calendar quarter ends.  These values are frozen before the first run.
+DEFENSIVE_FACTOR_STRATEGY_ID = "us-defensive-multifactor"
+DEFENSIVE_FACTOR_SYMBOLS = ["US.QUAL", "US.VLUE", "US.USMV"]
+DEFENSIVE_FACTOR_V1 = {
+    "version": "1",
+    "strategy_family": "long_only_equity_factor_premia",
+    "asset_universe": ["QUAL", "VLUE", "USMV"],
+    "target_weights": {"QUAL": 1 / 3, "VLUE": 1 / 3, "USMV": 1 / 3},
+    "base_currency": "JPY",
+    "signal_currency": "JPY",
+    "rebalance_frequency": "calendar_quarter_end",
+    "execution": "next_common_trading_day_open",
+    "commission_model": COST_MODEL_VERSION,
+    "slippage_bps": SLIPPAGE_BPS,
+    "fx_conversion_cost_bps": 10.0,
+    "initial_cash_jpy": 100_000.0,
+    "oos_start": "2021-01-01",
+    "acceptance": {
+        "minimum_history_years": 10.0,
+        "minimum_net_cagr": 0.0,
+        "minimum_oos_sharpe": 0.50,
+        "minimum_positive_year_fraction": 0.60,
+        "maximum_annualized_turnover": 1.50,
+        "maximum_cost_drag": 0.05,
+        "maximum_abs_trend_correlation": 0.85,
+        "maximum_abs_risk_parity_correlation": 0.90,
+        "must_improve_spy_jpy_max_drawdown": True,
+    },
+}
+DEFENSIVE_FACTOR_V1_HASH = stable_config_hash(DEFENSIVE_FACTOR_V1)
+
+
+# v1 retained a value sleeve and failed only its pre-registered defensive
+# drawdown gate.  v2 is a new, narrower quality/low-volatility mandate rather
+# than a parameter search over v1.  It is frozen before its first run.
+DEFENSIVE_FACTOR_V2 = {
+    "version": "2",
+    "strategy_family": "long_only_quality_low_volatility",
+    "asset_universe": ["QUAL", "USMV"],
+    "target_weights": {"QUAL": 0.50, "USMV": 0.50},
+    "base_currency": "JPY",
+    "signal_currency": "JPY",
+    "rebalance_frequency": "calendar_half_year_end",
+    "execution": "next_common_trading_day_open",
+    "commission_model": COST_MODEL_VERSION,
+    "slippage_bps": SLIPPAGE_BPS,
+    "fx_conversion_cost_bps": 10.0,
+    "initial_cash_jpy": 100_000.0,
+    "oos_start": "2021-01-01",
+    "acceptance": {
+        "minimum_history_years": 10.0,
+        "minimum_net_cagr": 0.0,
+        "minimum_oos_sharpe": 0.50,
+        "minimum_positive_year_fraction": 0.60,
+        "maximum_annualized_turnover": 1.00,
+        "maximum_cost_drag": 0.03,
+        "maximum_abs_trend_correlation": 0.85,
+        "maximum_abs_risk_parity_correlation": 0.90,
+        "must_improve_spy_jpy_max_drawdown": True,
+    },
+}
+DEFENSIVE_FACTOR_V2_HASH = stable_config_hash(DEFENSIVE_FACTOR_V2)

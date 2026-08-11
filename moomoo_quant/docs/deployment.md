@@ -14,6 +14,8 @@ loopback-only; AWS exposes 80/443, not 8501.
 
 The existing `moomoo-quant-daily.timer` is reused; its oneshot service runs
 `python -m moomoo_quant.jobs.shadow_runner --run-once`. Do not create a second
-timer. After code deployment install requirements, run the fixed research suite,
-ledger migration and `pytest`, then restart the dashboard. The operator's
-existing Nginx authentication choice is not changed by app deploy.
+timer. After code deployment install requirements, run `pytest`, initialize the
+ledger and run the Shadow Runner once so the factor ETF
+caches are present, then restart the dashboard. Do not rerun or overwrite a
+frozen first-result file during deployment. The operator's existing Nginx
+authentication choice is not changed by app deploy.

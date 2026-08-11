@@ -134,7 +134,7 @@ def cmd_mean_reversion_research(_args) -> None:
 
 def cmd_research_suite(_args) -> None:
     result = run_research_suite()
-    logger.info("Stress Pullback v2:\n%s", pformat(result["stress"]["summary"], sort_dicts=False))
+    logger.info("Quality & Low Volatility v2:\n%s", pformat(result["defensive_factor"]["summary"], sort_dicts=False))
     logger.info("Risk Parity v1:\n%s", pformat(result["risk_parity"]["summary"], sort_dicts=False))
     logger.info("Correlation matrix:\n%s", result["correlation"].to_string())
     logger.info("Research only. No broker or trading context was opened.")

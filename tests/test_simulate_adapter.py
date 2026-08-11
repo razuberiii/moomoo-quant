@@ -2,13 +2,13 @@ import ast
 from datetime import datetime, timezone
 
 import pytest
-from moomoo import TrdEnv
 
 from moomoo_quant import config
 from moomoo_quant.multi_strategy.ledger import ShadowLedger
 from moomoo_quant.multi_strategy.models import ProposedOrder, RiskDecision, RiskScope, RiskStatus
 from moomoo_quant.trading.moomoo_simulate_adapter import (
     MoomooSimulateExecutionAdapter,
+    SIMULATE_ENVIRONMENT,
     SimulateExecutionDisabled,
     SimulateSafetyError,
 )
@@ -34,7 +34,7 @@ def approved():
 
 def test_adapter_explicitly_fixes_simulate_environment(tmp_path):
     adapter = MoomooSimulateExecutionAdapter(ShadowLedger(tmp_path / "db"), FakeGateway())
-    assert adapter.trading_environment == TrdEnv.SIMULATE
+    assert adapter.trading_environment == SIMULATE_ENVIRONMENT
 
 
 def test_adapter_rejects_every_non_simulate_environment(tmp_path):
@@ -61,7 +61,7 @@ def test_mock_submission_is_idempotent_and_passes_simulate_explicitly(tmp_path):
     second = adapter.submit(order(), approved(), rebalance_id="rebalance-1", strategy_id="A")
     assert first.order_id == second.order_id == "fake-1"
     assert len(gateway.calls) == 1
-    assert gateway.calls[0]["trading_environment"] == TrdEnv.SIMULATE
+    assert gateway.calls[0]["trading_environment"] == SIMULATE_ENVIRONMENT
 
 
 def test_no_trade_account_or_unlock_api_is_executable():

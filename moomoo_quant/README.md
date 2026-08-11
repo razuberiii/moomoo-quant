@@ -1,6 +1,6 @@
 # moomoo_quant
 
-个人 moomoo OpenAPI 量化交易实验项目。当前阶段只研究美股 / 美股 ETF，并以 `US.SPY` 为第一个实验标的。
+个人 moomoo OpenAPI 多策略量化运行项目。当前阶段只使用美股 / 美股 ETF，以 JPY 作为统一记账与收益基准。历史回测是策略准入证据；日常入口是前向影子账户和组合运行控制台。
 
 ## 安全边界
 
@@ -123,29 +123,38 @@ Dashboard 默认只读取已有的 `results` 和 `data` 文件，不会在打开
 streamlit run moomoo_quant\dashboard.py
 ```
 
-顶层页面为“组合总览”“机器人详情”“三机器人比较”“合并理论持仓”和“安全与运行记录”。Benchmark 只在机器人详情的“对照组”中出现，不是机器人。生产模式不显示重新运行按钮；只有显式设置 `QUANT_ADMIN_MODE=true` 才显示本地管理员入口。
+顶层页面为“运行总览”“机器人详情”“运行策略比较”“合并理论持仓”和“运行与安全”。只有已通过准入并获得预算的 A / B / C 会出现在运行层；被拒绝的版本只保留在机器人详情的“历史档案”中。Benchmark 只在机器人详情的“对照组”中出现，不是机器人。生产模式不显示重新运行按钮；只有显式设置 `QUANT_ADMIN_MODE=true` 才显示本地管理员入口。
 
 每次 Trend 回测会生成唯一 `run_id`，完整结果放在 `results/runs/<run_id>/`，Dashboard 通过原子更新的 `current_run.json` 读取同一批表格、图形和危机数据。
 
-## 多策略与固定第二实验
+## 多策略运行组合
 
 ```powershell
-python -m moomoo_quant.main mean-reversion-research
+python -m moomoo_quant.main research-suite
 python -m moomoo_quant.main multi-strategy-init
 python -m pytest -q
 ```
 
-Mean Reversion v1 在首次 JPY 全样本运行前已经预注册，固定 SMA200、RSI5、25/55 阈值、5 日上限、2% 止损和 25% 仓位，不做参数搜索。它的 Gross 为正但成本后期望为负，因此保持 `RESEARCH_REJECTED`，预算为 0，不进入 Shadow。
+运行层只聚合获得预算的机器人；研究拒绝策略继续占用研究槽位，但不贡献持仓：
 
-Robot B v2 与 Robot C v1 的冻结首跑：
+- Robot A — `JPY Multi-Asset Trend v1`：JPY 计价的时间序列趋势，月频，预算 ¥100,000。v1 参数保持冻结。
+- Robot B — `US Quality & Low Volatility v2`：QUAL / USMV 各 50% 的长期股票因子配置，半年再平衡，当前预算 ¥0。
+- Robot C — `JPY Unlevered Risk Parity v1`：SPY / GLD / IEF 的 JPY 逆波动配置，月频，预算 ¥100,000。v1 参数保持冻结。
 
-```powershell
-python -m moomoo_quant.main research-suite
-```
+Robot B 不使用 A 的 momentum / SMA 信号，也不使用 C 的逆波动动态权重。不可变首跑档案曾记录为通过；修复完整月末和资产缓存隔离后，使用当前 OpenD 可重新获取的数据从 2013-10-30 重跑，最大回撤比同期 SPY JPY 差约 0.015 个百分点，因此预注册回撤门槛未通过。参数没有修改，当前状态为 `RESEARCH_REJECTED`，预算为 ¥0，也不会加载 Factor 行情进入生产 Runner。
 
-`Stress Pullback Mean Reversion v2` 是 SPY 单标的压力事件策略。首次正式结果仅 8 笔，Gross +2.59%、Net +0.30%，但未达到预注册最低交易样本和年度分散门槛，因此保持 `RESEARCH_REJECTED`、预算 ¥0。旧 Mean Reversion v1 的失败结果永久保留。
+获得预算的机器人由独立虚拟账户记录资金、持仓、信号、成交和净值。Portfolio Manager 只按策略预算聚合相同资产的净目标，Ledger 保留每一份持仓的策略归属，因此一个机器人退出不会卖掉另一个机器人拥有的份额。
 
-`JPY Unlevered Risk Parity v1` 使用 SPY/GLD/IEF 的 63 日 JPY 逆波动权重，单资产上限 45%，月末检查、次日开盘、总权重不超过 100%。首次结果通过全部预注册门槛，进入本地 `SHADOW`，预算 ¥100,000；2026-07-31 基准不追溯执行。
+## 被拒绝的研究档案
+
+被拒绝的研究版本不是运行机器人，预算固定为 0：
+
+- `Mean Reversion v1`：Gross 为正但成本后期望为负。
+- `Stress Pullback Mean Reversion v2`：仅 8 笔，样本与年度分散门槛失败。
+- `US Defensive Multi-Factor v1`：QUAL / VLUE / USMV 版本只未通过相对 SPY JPY 的最大回撤门槛。
+- `US Quality & Low Volatility v2`：当前可复现数据下只未通过相对 SPY JPY 的最大回撤门槛；不可变首跑档案仍保留。
+
+所有失败结果和预注册规格永久保留，但不会占用运行总览的机器人位置。
 
 ## 影子账户与每日任务
 
@@ -153,7 +162,7 @@ python -m moomoo_quant.main research-suite
 python -m moomoo_quant.jobs.shadow_runner --run-once
 ```
 
-统一 Runner 先增量更新行情缓存，再按 XNYS 日历、America/New_York 时区、DST、月末与数据完整性更新 SQLite 影子账本。它不会重发或覆盖冻结的正式回测 run。Signal、Virtual Fill、Equity 和 Reconciliation 都有唯一键，并由文件锁避免并发。它只做本地理论碎股记账，不连接交易账户。
+统一 Runner 先增量更新 SPY / QQQ / GLD / IEF / QUAL / USMV 与 USDJPY 行情缓存，再按 XNYS 日历、America/New_York 时区、DST、各策略检查频率与数据完整性更新 SQLite 影子账本。它不会重发或覆盖冻结的正式回测 run。Signal、Virtual Fill、Equity 和 Reconciliation 都有唯一键，并由文件锁避免并发。它只做本地理论碎股记账，不连接交易账户。
 
 风险检查分为 `SHADOW_SCOPE`、`PROPOSAL_SCOPE` 和始终禁用的 `EXECUTION_SCOPE`。Execution Kill switch 不会阻止本地 Virtual Fill，但陈旧行情、陈旧 FX、错误日历、版本/预算/幂等或 Ledger 不一致都会阻止。
 
