@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from .. import config
 from .models import AggregatedTarget, LifecycleStage, ProposedOrder, RiskDecision, StrategyDefinition, jsonable
 from ..costs import commission_usd
 
@@ -269,6 +271,75 @@ class ShadowLedger:
                 ),
             )
 
+    def apply_admission_budget(self, admission: dict, runtime_status: str) -> bool:
+        """Apply an immutable SHADOW admission to a previously empty account.
+
+        This is intentionally one-way: it can fund a pristine research account,
+        but it cannot resize an active strategy or withdraw its capital.
+        """
+        if admission.get("decision") != "SHADOW_READY" or not admission.get("immutable"):
+            return False
+        strategy_id = admission["strategy_id"]
+        version = str(admission["strategy_version"])
+        target = float(admission["allocated_capital_jpy"])
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as conn:
+            account = conn.execute(
+                "SELECT * FROM strategy_accounts WHERE strategy_id=? AND strategy_version=?",
+                (strategy_id, version),
+            ).fetchone()
+            if account is None:
+                raise KeyError(f"Unknown strategy account: {strategy_id} v{version}")
+            current = float(account["allocated_capital_jpy"])
+            if abs(current - target) <= 1e-8:
+                conn.execute(
+                    "UPDATE strategy_accounts SET status=?, updated_at=? WHERE account_id=?",
+                    (runtime_status, now, account["account_id"]),
+                )
+                return False
+            if current != 0.0:
+                raise RuntimeError("Admission cannot resize an already funded strategy")
+            activity = conn.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM strategy_positions WHERE account_id=?) +
+                  (SELECT COUNT(*) FROM virtual_fills WHERE account_id=?)
+                """,
+                (account["account_id"], account["account_id"]),
+            ).fetchone()[0]
+            if activity:
+                raise RuntimeError("Cannot fund a research account with existing position activity")
+            conn.execute(
+                """
+                UPDATE strategy_accounts
+                SET allocated_capital_jpy=?, cash_jpy=cash_jpy+?, status=?, updated_at=?
+                WHERE account_id=?
+                """,
+                (target, target, runtime_status, now, account["account_id"]),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO strategy_budgets VALUES (?, ?, ?, ?, ?)",
+                (
+                    f"budget:{account['account_id']}:{admission['admission_id']}",
+                    account["account_id"],
+                    target,
+                    now,
+                    admission["admission_id"],
+                ),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO cash_ledger_entries VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    f"cash:{account['account_id']}:{admission['admission_id']}",
+                    account["account_id"],
+                    target,
+                    "ADMISSION_CAPITAL",
+                    admission["admission_id"],
+                    now,
+                ),
+            )
+        return True
+
     def record_migration(self, migration_id: str, details: dict) -> bool:
         with self.connect() as conn:
             cursor = conn.execute(
@@ -476,6 +547,8 @@ class ShadowLedger:
         usdjpy: float,
         slippage_bps: float,
         fx_cost_bps: float,
+        quantity_step: float = config.OPERATIONAL_QUANTITY_STEP,
+        fx_fee_jpy_per_usd: float = config.OPERATIONAL_FX_FEE_JPY_PER_USD,
     ) -> bool:
         account = self.strategy_account(strategy_id, strategy_version)
         weights = self.target_weights(signal_id)
@@ -520,17 +593,26 @@ class ShadowLedger:
                         for _ in range(30):
                             notional_usd = quantity * execution_price
                             raw_jpy = quantity * raw_price * usdjpy
-                            cost = notional_usd * usdjpy + commission_usd(notional_usd) * usdjpy + raw_jpy * fx_cost_bps / 10_000
+                            cost = (
+                                notional_usd * usdjpy
+                                + commission_usd(notional_usd) * usdjpy
+                                + raw_jpy * fx_cost_bps / 10_000
+                                + notional_usd * fx_fee_jpy_per_usd
+                            )
                             if cost <= cash + 1e-8:
                                 break
                             quantity *= 0.999
+                    quantity = math.floor((quantity + 1e-12) / quantity_step) * quantity_step
                     if quantity <= 1e-10:
                         continue
                     notional_usd = quantity * execution_price
                     raw_notional_jpy = quantity * raw_price * usdjpy
                     commission_jpy = commission_usd(notional_usd) * usdjpy
                     slippage_jpy = quantity * abs(execution_price - raw_price) * usdjpy
-                    fx_cost_jpy = raw_notional_jpy * fx_cost_bps / 10_000
+                    fx_cost_jpy = (
+                        raw_notional_jpy * fx_cost_bps / 10_000
+                        + notional_usd * fx_fee_jpy_per_usd
+                    )
                     fill_id = f"fill:{signal_id}:{symbol}:{side}"
                     conn.execute(
                         "INSERT INTO virtual_fills VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

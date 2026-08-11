@@ -7,11 +7,18 @@ strategy. In this release `SIMULATE` and `LIVE` always raise `PermissionError`.
 - JPY Multi-Asset Trend v1: `SHADOW`
 - US ETF Short-Term Mean Reversion v1: `RESEARCH_REJECTED`, frozen first result
 - Stress Pullback Mean Reversion v2: `RESEARCH_REJECTED`, frozen first result
-- US Quality & Low Volatility v2: `RESEARCH_REJECTED`, JPY 0; immutable
-  first-run evidence retained, current OpenD-cache reproduction failed the
-  pre-registered SPY JPY drawdown gate
+- US Quality & Low Volatility v2: `SHADOW`, JPY 100,000; the current
+  OpenD-cache reproduction's SPY JPY drawdown comparison is an advisory warning
 - JPY Unlevered Risk Parity v1: `SHADOW`, JPY 100,000, no baseline backfill
 
 Lifecycle history records entered time, approver, evidence run ID, notes and any
 rejection reason. No scheduled job promotes a strategy. Database enum values
 remain English and the UI translates them.
+
+`strategy-admission-v1` separates hard validity/executability checks from
+portfolio warnings. Hard checks cover evidence, JPY net reporting, commission,
+slippage, FX cost, 0.001-share rounding, nonnegative cash, long-only/unlevered
+weights, at least ten years of history, positive operational net CAGR and data
+alignment. Benchmark outperformance and correlation are advisory. Admission
+records are content-hashed and stored under `results/admissions/`; mutable
+research reruns cannot promote, reject or resize an admitted strategy.

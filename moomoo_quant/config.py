@@ -30,6 +30,13 @@ INITIAL_CASH_USD = 700.0
 MAX_POSITION_PCT = 0.25
 ALLOW_FRACTIONAL_SHARES = True
 
+# Operational replay / Forward Shadow execution assumptions.  Frozen research
+# baselines keep their original parameters; these values are a separate,
+# conservative broker-executable overlay used for all headline NET results.
+OPERATIONAL_QUANTITY_STEP = 0.001
+OPERATIONAL_FX_FEE_JPY_PER_USD = 0.25
+OPERATIONAL_EXECUTION_PROFILE_VERSION = "moomoo-jp-auto-fx-fractional-v1"
+
 SMA_WINDOW = 200
 RSI_WINDOW = 5
 ENTRY_RSI = 25.0
@@ -67,6 +74,7 @@ MEAN_REVERSION_STRATEGY_ID = "us-etf-short-term-mean-reversion"
 RISK_POLICY_VERSION = "proposal-only-v1"
 BACKTEST_ENGINE_VERSION = "trend-engine-v1.0"
 COST_MODEL_VERSION = "moomoo-jp-basic-v1"
+ADMISSION_POLICY_VERSION = "strategy-admission-v1"
 QUANT_ADMIN_MODE = os.environ.get("QUANT_ADMIN_MODE", "false").lower() == "true"
 KILL_SWITCH = os.environ.get("QUANT_KILL_SWITCH", "true").lower() == "true"
 MOOMOO_SIMULATE_ENABLED = os.environ.get("MOOMOO_SIMULATE_ENABLED", "false").lower() == "true"

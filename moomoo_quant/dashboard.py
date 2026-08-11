@@ -17,6 +17,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from moomoo_quant import config
+from moomoo_quant.multi_strategy.admission import load_admission
 from moomoo_quant.run_manifest import resolve_current_run
 
 
@@ -130,6 +131,21 @@ def load_research_data(prefix: str) -> dict:
 
 
 @st.cache_data(show_spinner=False)
+def load_operational_replay() -> dict:
+    path = config.RESULTS_DIR / "operational_replay.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+@st.cache_data(show_spinner=False)
+def load_admissions() -> dict:
+    return {
+        "A": load_admission(config.TREND_STRATEGY_ID, "1") or {},
+        "B": load_admission(config.DEFENSIVE_FACTOR_STRATEGY_ID, "2") or {},
+        "C": load_admission(config.RISK_PARITY_STRATEGY_ID, "1") or {},
+    }
+
+
+@st.cache_data(show_spinner=False)
 def load_shadow_data() -> dict:
     state_path = config.SHADOW_DIR / "state.json"
     if not state_path.exists():
@@ -154,6 +170,8 @@ STATUS_NAMES = {
     "WAITING_NEXT_MONTH_END": "等待下一次月末信号",
     "WAITING_NEXT_HALF_YEAR_END": "等待下一次半年末信号",
     "RESEARCH_REJECTED": "研究门槛未通过",
+    "RESEARCH_INVALID": "研究证据无效",
+    "SHADOW_READY": "已通过统一准入",
     "PROPOSED_ONLY": "拟议订单（不会发送）",
     "REJECTED": "已拒绝",
     "APPROVED_FOR_PROPOSAL": "仅批准生成拟议订单",
@@ -674,39 +692,51 @@ def portfolio_overview(
     status_cols[0].metric("Kill switch", "开启")
     status_cols[1].metric("数据更新时间", date_text(data["manifest"].get("market_data_last_date")))
 
+    portfolio = operational_replay_data.get("portfolio", {})
+    portfolio_stats = portfolio.get("stats", {})
+    if portfolio_stats:
+        st.subheader("三机器人历史组合 · 成本后净回放")
+        history = st.columns(5)
+        history[0].metric("共同区间净 CAGR", pct(portfolio_stats.get("cagr")))
+        history[1].metric("最大回撤", pct(portfolio_stats.get("max_drawdown")))
+        history[2].metric("夏普比率", f"{portfolio_stats.get('sharpe', 0):.3f}")
+        history[3].metric("共同区间", f"{portfolio.get('common_period_start')} 起")
+        history[4].metric("组合总成本", f"¥{portfolio_stats.get('total_cost_jpy', 0):,.0f}")
+        st.caption("三只机器人各自持有 ¥100,000 虚拟预算；佣金、滑点、自动换汇成本、0.001 股取整与现金拖累均已计入。")
+
     st.subheader("策略机器人")
     left, middle, right = st.columns(3)
-    trend_stats = data["performance"].iloc[0]
+    trend_stats = operational_replay_data.get("strategies", {}).get("A", {}).get("stats", data["performance"].iloc[0])
     current = data["current"].iloc[-1]
     with left.container(border=True):
         runtime = _runtime_state(multi, config.TREND_STRATEGY_ID, "1")
         st.markdown("### Robot A · JPY 多资产趋势 v1")
         st.write(f"阶段：**{runtime['stage']}**")
         st.write(f"分配资金：**¥{runtime['budget_jpy']:,.0f}**")
-        st.write(f"历史年化收益率：**{float(trend_stats['cagr']):.2%}**")
+        st.write(f"成本后净 CAGR：**{float(trend_stats['cagr']):.2%}**")
         st.write(f"历史最大回撤：**{float(trend_stats['max_drawdown']):.2%}**")
         st.write("历史最新目标：**SPY 50%、QQQ 50%**")
         st.write(f"最近信号：**{date_text(current['signal_date'])}**")
         st.write(f"状态：**{runtime['status']}**")
     with middle.container(border=True):
         summary = defensive_factor.get("summary", {})
-        stats = summary.get("stats", {})
+        stats = operational_replay_data.get("strategies", {}).get("B", {}).get("stats", summary.get("stats", {}))
         runtime = _runtime_state(multi, config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
         st.markdown("### Robot B · 美股质量低波动 v2")
         st.write(f"阶段：**{runtime['stage']}**")
         st.write(f"分配资金：**¥{runtime['budget_jpy']:,.0f}**")
-        st.write(f"历史年化收益率：**{stats.get('cagr', 0):.2%}**")
+        st.write(f"成本后净 CAGR：**{stats.get('cagr', 0):.2%}**")
         st.write(f"历史最大回撤：**{stats.get('max_drawdown', 0):.2%}**")
         st.write(f"历史最新目标：**{_target_text(summary, ('QUAL', 'USMV'))}**")
         st.write(f"状态：**{runtime['status']}**")
     with right.container(border=True):
         summary = risk_parity.get("summary", {})
-        stats = summary.get("stats", {})
+        stats = operational_replay_data.get("strategies", {}).get("C", {}).get("stats", summary.get("stats", {}))
         runtime = _runtime_state(multi, config.RISK_PARITY_STRATEGY_ID, "1")
         st.markdown("### Robot C · JPY 无杠杆风险平价 v1")
         st.write(f"阶段：**{runtime['stage']}**")
         st.write(f"分配资金：**¥{runtime['budget_jpy']:,.0f}**")
-        st.write(f"历史年化收益率：**{stats.get('cagr', 0):.2%}**")
+        st.write(f"成本后净 CAGR：**{stats.get('cagr', 0):.2%}**")
         st.write(f"历史最大回撤：**{stats.get('max_drawdown', 0):.2%}**")
         st.write(f"历史最新目标：**{_target_text(summary, ('SPY', 'GLD', 'IEF'))}**")
         st.write(f"状态：**{runtime['status']}**")
@@ -843,14 +873,26 @@ def mean_reversion_detail(data: dict, mr: dict) -> None:
     st.plotly_chart(benchmark_figure, width="stretch")
 
 
-def research_detail(title: str, research: dict, correlation_labels: tuple[str, ...]) -> None:
+def research_detail(
+    title: str,
+    research: dict,
+    correlation_labels: tuple[str, ...],
+    admission: dict | None = None,
+    operational: dict | None = None,
+) -> None:
     st.header(title)
     if not research:
         st.info("尚未运行冻结规格的首次正式研究。")
         return
     summary = research["summary"]
-    stats = summary["stats"]
-    if summary["status"] == "SHADOW":
+    admission = admission or {}
+    stats = dict(summary["stats"])
+    stats.update((operational or {}).get("stats", {}))
+    if admission.get("decision") == "SHADOW_READY":
+        st.success("统一硬门槛已通过；已进入 Forward Shadow，历史信号不追溯成交。")
+        if "does_not_improve_spy_jpy_max_drawdown" in admission.get("warnings", []):
+            st.warning("对照警告：最大回撤没有优于同期 SPY（日元）。这是组合评估项，不再单独否决策略。")
+    elif summary["status"] == "SHADOW":
         st.success("固定规格验收全部通过；已进入 Forward Shadow，历史信号不追溯成交。")
     else:
         st.error("固定规格验收未通过；已归档，预算为 ¥0。")
@@ -860,7 +902,7 @@ def research_detail(title: str, research: dict, correlation_labels: tuple[str, .
     cols[2].metric("最大回撤", pct(stats["max_drawdown"]))
     cols[3].metric("夏普比率", f"{stats['sharpe']:.3f}")
     details = [
-        ("毛收益（Gross）", pct(stats["gross_return"])),
+        ("收益口径", "NET（已扣佣金、滑点、换汇成本及碎股取整现金拖累）"),
         ("交易成本合计", f"¥{stats['total_cost_jpy']:,.0f}"),
         ("换手率", f"{stats['turnover']:.2f}x"),
         ("交易次数", f"{stats['trade_count']}"),
@@ -876,12 +918,21 @@ def research_detail(title: str, research: dict, correlation_labels: tuple[str, .
             label = "与 Robot A 相关性" if "trend" in key else "与其他候选机器人相关性"
             details.append((label, f"{summary[key]:.3f}"))
     st.dataframe(pd.DataFrame(details, columns=["指标", "首次正式结果"]), hide_index=True, width="stretch")
-    st.subheader("固定验收结果")
-    st.dataframe(
-        pd.DataFrame([{"预注册门槛": key, "结果": "通过" if value else "未通过"} for key, value in summary["acceptance_gates"].items()]),
-        hide_index=True,
-        width="stretch",
-    )
+    if admission:
+        st.subheader("统一策略准入 v1")
+        st.dataframe(
+            pd.DataFrame([{"硬门槛": key, "结果": "通过" if value else "未通过"} for key, value in admission["hard_checks"].items()]),
+            hide_index=True,
+            width="stretch",
+        )
+        st.caption("Benchmark、相关性和个别市场阶段表现作为警告或组合配置依据，不再被当作单策略致命门槛。")
+    else:
+        st.subheader("固定验收结果")
+        st.dataframe(
+            pd.DataFrame([{"预注册门槛": key, "结果": "通过" if value else "未通过"} for key, value in summary["acceptance_gates"].items()]),
+            hide_index=True,
+            width="stretch",
+        )
     equity = research["equity"].copy()
     equity["date"] = pd.to_datetime(equity["date"])
     figure = go.Figure(go.Scatter(x=equity["date"], y=equity["equity_jpy"], name="净值（日元）", mode="lines"))
@@ -923,13 +974,15 @@ def robot_details(
             cols[2].metric("历史最新目标", _target_text(summary, ("QUAL", "USMV")))
             cols[3].metric("下次检查", "6 月或 12 月月末" if runtime["is_funded"] else "无（研究拒绝）")
             st.write(f"运行状态：**{runtime['status']}**")
-            st.write(f"研究结论：**{summary.get('status', '尚无研究结果')}**")
+            st.write(f"统一准入：**{admission_data['B'].get('decision', '尚无准入记录')}**")
             st.caption("质量 + 低波动因子，固定 50% / 50%，半年调仓；不使用趋势、动量或均值回归。")
         with tabs[1]:
             research_detail(
                 "US Quality & Low Volatility v2",
                 defensive_factor_v2,
                 ("monthly_correlation_with_trend_v1", "monthly_correlation_with_risk_parity_v1"),
+                admission_data["B"],
+                operational_replay_data.get("strategies", {}).get("B", {}),
             )
         with tabs[2]:
             if runtime["is_funded"]:
@@ -964,6 +1017,8 @@ def robot_details(
                 "JPY Unlevered Risk Parity v1",
                 risk_parity,
                 ("monthly_correlation_with_trend_v1", "monthly_correlation_with_defensive_factor_v2"),
+                admission_data["C"],
+                operational_replay_data.get("strategies", {}).get("C", {}),
             )
         with tabs[1]:
             latest = risk_parity.get("summary", {}).get("latest_target", {})
@@ -997,18 +1052,18 @@ def robot_details(
 
 def robot_comparison(data: dict, defensive_factor: dict, risk_parity: dict, multi: dict) -> None:
     st.title("运行策略比较")
-    trend = data["performance"].iloc[0]
+    trend = operational_replay_data.get("strategies", {}).get("A", {}).get("stats", data["performance"].iloc[0])
     factor_summary = defensive_factor.get("summary", {})
     parity_summary = risk_parity.get("summary", {})
-    factor_stats = factor_summary.get("stats", {})
-    parity_stats = parity_summary.get("stats", {})
+    factor_stats = operational_replay_data.get("strategies", {}).get("B", {}).get("stats", factor_summary.get("stats", {}))
+    parity_stats = operational_replay_data.get("strategies", {}).get("C", {}).get("stats", parity_summary.get("stats", {}))
     trend_runtime = _runtime_state(multi, config.TREND_STRATEGY_ID, "1")
     factor_runtime = _runtime_state(multi, config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
     parity_runtime = _runtime_state(multi, config.RISK_PARITY_STRATEGY_ID, "1")
     rows = [
-        {"策略": "Robot A · 趋势", "版本": "1", "生命周期": trend_runtime["stage"], "预算": f"¥{trend_runtime['budget_jpy']:,.0f}", "年化收益率": pct(trend["cagr"]), "最大回撤": pct(trend["max_drawdown"]), "夏普比率": f"{trend['sharpe']:.3f}", "净收益": pct(trend["total_return"]), "换手率": "—", "成本（日元）": "—", "当前仓位": "SPY 50%、QQQ 50%", "下一检查": "下一个美股月末", "拒绝原因": ""},
-        {"策略": "Robot B · 质量低波动", "版本": "2", "生命周期": factor_runtime["stage"], "预算": f"¥{factor_runtime['budget_jpy']:,.0f}", "年化收益率": pct(factor_stats.get("cagr")), "最大回撤": pct(factor_stats.get("max_drawdown")), "夏普比率": f"{factor_stats.get('sharpe', 0):.3f}", "净收益": pct(factor_stats.get("net_return")), "换手率": f"{factor_stats.get('annualized_turnover', 0):.2f}x/年", "成本（日元）": f"¥{factor_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": _target_text(factor_summary, ("QUAL", "USMV")), "下一检查": "下一个半年末" if factor_runtime["is_funded"] else "无（研究拒绝）", "拒绝原因": "、".join(factor_summary.get("rejection_reasons", []))},
-        {"策略": "Robot C · 风险平价", "版本": "1", "生命周期": parity_runtime["stage"], "预算": f"¥{parity_runtime['budget_jpy']:,.0f}", "年化收益率": pct(parity_stats.get("cagr")), "最大回撤": pct(parity_stats.get("max_drawdown")), "夏普比率": f"{parity_stats.get('sharpe', 0):.3f}", "净收益": pct(parity_stats.get("net_return")), "换手率": f"{parity_stats.get('turnover', 0):.2f}x", "成本（日元）": f"¥{parity_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": _target_text(parity_summary, ("SPY", "GLD", "IEF")), "下一检查": "下一个美股月末", "拒绝原因": "、".join(parity_summary.get("rejection_reasons", []))},
+        {"策略": "Robot A · 趋势", "版本": "1", "生命周期": trend_runtime["stage"], "预算": f"¥{trend_runtime['budget_jpy']:,.0f}", "净 CAGR（全成本）": pct(trend["cagr"]), "最大回撤": pct(trend["max_drawdown"]), "夏普比率": f"{trend['sharpe']:.3f}", "净收益": pct(trend["net_return"]), "总成本（日元）": f"¥{trend.get('total_cost_jpy', 0):,.0f}", "当前仓位": "SPY 50%、QQQ 50%", "下一检查": "下一个美股月末", "准入警告": "执行回放不覆盖冻结基线"},
+        {"策略": "Robot B · 质量低波动", "版本": "2", "生命周期": factor_runtime["stage"], "预算": f"¥{factor_runtime['budget_jpy']:,.0f}", "净 CAGR（全成本）": pct(factor_stats.get("cagr")), "最大回撤": pct(factor_stats.get("max_drawdown")), "夏普比率": f"{factor_stats.get('sharpe', 0):.3f}", "净收益": pct(factor_stats.get("net_return")), "总成本（日元）": f"¥{factor_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": _target_text(factor_summary, ("QUAL", "USMV")), "下一检查": "下一个半年末", "准入警告": "最大回撤未优于同期 SPY（日元）"},
+        {"策略": "Robot C · 风险平价", "版本": "1", "生命周期": parity_runtime["stage"], "预算": f"¥{parity_runtime['budget_jpy']:,.0f}", "净 CAGR（全成本）": pct(parity_stats.get("cagr")), "最大回撤": pct(parity_stats.get("max_drawdown")), "夏普比率": f"{parity_stats.get('sharpe', 0):.3f}", "净收益": pct(parity_stats.get("net_return")), "总成本（日元）": f"¥{parity_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": _target_text(parity_summary, ("SPY", "GLD", "IEF")), "下一检查": "下一个美股月末", "准入警告": ""},
     ]
     comparison = pd.DataFrame(rows)
     st.dataframe(
@@ -1087,6 +1142,8 @@ stress_pullback_data = load_research_data("stress_pullback_v2")
 defensive_factor_v1_data = load_research_data("defensive_factor_v1")
 defensive_factor_v2_data = load_research_data("defensive_factor_v2")
 risk_parity_data = load_research_data("risk_parity_v1")
+operational_replay_data = load_operational_replay()
+admission_data = load_admissions()
 
 if page == "运行总览":
     portfolio_overview(dashboard_data, multi_strategy_data, defensive_factor_v2_data, risk_parity_data)

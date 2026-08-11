@@ -20,6 +20,7 @@ def _max_affordable_jpy(
     fx: float,
     fx_cost_bps: float = config.FX_CONVERSION_COST_BPS,
     commission_enabled: bool = True,
+    fx_fee_jpy_per_usd: float = 0.0,
 ) -> float:
     if cash <= 0 or price_usd <= 0 or fx <= 0:
         return 0.0
@@ -29,12 +30,25 @@ def _max_affordable_jpy(
         qty = (low + high) / 2
         notional_usd = qty * price_usd
         commission = commission_usd(notional_usd) if commission_enabled else 0.0
-        total = notional_usd * fx + commission * fx + notional_usd * fx * fx_rate
+        total = (
+            notional_usd * fx
+            + commission * fx
+            + notional_usd * fx * fx_rate
+            + notional_usd * fx_fee_jpy_per_usd
+        )
         if total <= cash:
             low = qty
         else:
             high = qty
     return low if config.ALLOW_FRACTIONAL_SHARES else float(math.floor(low))
+
+
+def _floor_quantity(quantity: float, quantity_step: float | None) -> float:
+    if quantity_step is None:
+        return quantity
+    if quantity_step <= 0:
+        raise ValueError("quantity_step must be positive")
+    return math.floor((quantity + 1e-12) / quantity_step) * quantity_step
 
 
 def _performance(
@@ -91,6 +105,8 @@ def run_trend_backtest(
     slippage_bps: float = config.SLIPPAGE_BPS,
     fx_cost_bps: float = config.FX_CONVERSION_COST_BPS,
     commission_enabled: bool = True,
+    quantity_step: float | None = None,
+    fx_fee_jpy_per_usd: float = 0.0,
 ) -> dict:
     symbols = list(daily)
     full_calendar = next(iter(daily.values())).index
@@ -148,11 +164,17 @@ def run_trend_backtest(
                         qty = min(
                             desired_qty,
                             _max_affordable_jpy(
-                                cash, exec_price, fx, fx_cost_bps, commission_enabled
+                                cash,
+                                exec_price,
+                                fx,
+                                fx_cost_bps,
+                                commission_enabled,
+                                fx_fee_jpy_per_usd,
                             ),
                         )
                     if not config.ALLOW_FRACTIONAL_SHARES:
                         qty = float(math.floor(qty))
+                    qty = _floor_quantity(qty, quantity_step)
                     if qty <= 1e-10:
                         continue
 
@@ -161,7 +183,10 @@ def run_trend_backtest(
                     commission = commission_usd(notional_usd) if commission_enabled else 0.0
                     commission_jpy = commission * fx
                     slippage_jpy = qty * abs(exec_price - raw_open) * fx
-                    fx_cost_jpy = raw_notional_jpy * fx_cost_bps / 10_000
+                    fx_cost_jpy = (
+                        raw_notional_jpy * fx_cost_bps / 10_000
+                        + notional_usd * fx_fee_jpy_per_usd
+                    )
                     cash_flow = notional_usd * fx
                     if side == "SELL":
                         positions[symbol] -= qty
@@ -238,6 +263,8 @@ def run_trend_backtest(
             "total_commission_usd": float(trades["commission_usd"].sum()) if not trades.empty else 0.0,
             "total_slippage_jpy": float(trades["slippage_jpy"].sum()) if not trades.empty else 0.0,
             "total_fx_cost_jpy": float(trades["fx_cost_jpy"].sum()) if not trades.empty else 0.0,
+            "quantity_step": quantity_step,
+            "fx_fee_jpy_per_usd": fx_fee_jpy_per_usd,
         }
     )
     benchmarks = _benchmarks(daily, equity_curve["date"])

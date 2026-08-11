@@ -11,3 +11,10 @@ consistency; the execution kill switch does not block a local Virtual Fill.
 `PROPOSAL_SCOPE` adds portfolio aggregation, duplicate proposal, symbol/quantity
 allowlists, strategy attribution and OpenD health. `EXECUTION_SCOPE` always
 returns `EXECUTION_DISABLED`. All scopes reject shorts and leverage.
+
+Forward Shadow and operational backtest replay share an execution profile:
+Moomoo Japan Basic commission, 5 bps slippage, JPY 0.25 per converted USD and a
+0.001-share quantity step. Results labelled as running performance are NET of
+those costs and residual cash drag. Fractional eligibility for every symbol is
+still a required broker capability check before any separately approved
+SIMULATE or REAL phase.

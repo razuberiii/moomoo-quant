@@ -1,5 +1,6 @@
 import ast
 import json
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -9,6 +10,7 @@ from moomoo_quant import config
 from moomoo_quant.backtest.defensive_factor import defensive_factor_signals
 from moomoo_quant.backtest.risk_parity import _capped_inverse_vol, risk_parity_signals
 from moomoo_quant.multi_strategy.bootstrap import initialize_multi_strategy_ledger
+from moomoo_quant.multi_strategy.admission import load_admission
 from moomoo_quant.trend_data import load_cached_defensive_factor_history
 
 
@@ -64,12 +66,12 @@ def test_inverse_vol_cap_is_deterministic():
     assert weights.max() <= 0.45
 
 
-def test_rejected_research_budgets_stay_zero_and_passing_c_gets_shadow_budget(tmp_path):
+def test_archived_mean_reversion_stays_zero_and_all_admitted_etf_robots_are_funded(tmp_path):
     ledger = initialize_multi_strategy_ledger(tmp_path / "ledger.db", include_research_slots=True)
     accounts = {(row["strategy_id"], row["strategy_version"]): row for row in ledger.rows("strategy_accounts")}
     assert accounts[(config.STRESS_PULLBACK_STRATEGY_ID, "2")]["allocated_capital_jpy"] == 0
     assert accounts[(config.RISK_PARITY_STRATEGY_ID, "1")]["allocated_capital_jpy"] == 100_000
-    assert accounts[(config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")]["allocated_capital_jpy"] == 0
+    assert accounts[(config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")]["allocated_capital_jpy"] == 100_000
 
 
 def test_only_shadow_robots_have_positive_budget(tmp_path):
@@ -78,7 +80,47 @@ def test_only_shadow_robots_have_positive_budget(tmp_path):
     assert funded == {
         config.TREND_STRATEGY_ID,
         config.RISK_PARITY_STRATEGY_ID,
+        config.DEFENSIVE_FACTOR_STRATEGY_ID,
     }
+
+
+def test_unified_admission_is_immutable_and_independent_of_mutable_monitoring_result(tmp_path, monkeypatch):
+    source = config.RESULTS_DIR / "admissions"
+    target = tmp_path / "admissions"
+    shutil.copytree(source, target)
+    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path)
+    (tmp_path / "defensive_factor_v2_research.json").write_text(
+        json.dumps({"status": "RESEARCH_REJECTED", "run_id": "mutable-rerun"}),
+        encoding="utf-8",
+    )
+    admission = load_admission(config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
+    assert admission["decision"] == "SHADOW_READY"
+    ledger = initialize_multi_strategy_ledger(tmp_path / "ledger.db", include_research_slots=True)
+    account = ledger.strategy_account(config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
+    assert account["allocated_capital_jpy"] == 100_000
+
+
+def test_operational_replay_reports_net_returns_after_every_required_cost():
+    replay = load("operational_replay.json")
+    assert replay["cost_model"]["quantity_step_shares"] == 0.001
+    assert replay["cost_model"]["fx_fee_jpy_per_usd_each_conversion"] == 0.25
+    for strategy in replay["strategies"].values():
+        stats = strategy["stats"]
+        assert stats["net_return"] == stats["total_return"]
+        assert stats["fees_jpy"] > 0
+        assert stats["slippage_jpy"] > 0
+        assert stats["fx_cost_jpy"] > 0
+        assert stats["total_cost_jpy"] == pytest.approx(
+            stats["fees_jpy"] + stats["slippage_jpy"] + stats["fx_cost_jpy"]
+        )
+        assert all(strategy["execution_checks"].values())
+
+
+def test_common_period_three_robot_portfolio_has_diversification_evidence():
+    portfolio = load("operational_replay.json")["portfolio"]
+    assert portfolio["initial_capital_jpy"] == 300_000
+    assert portfolio["stats"]["sharpe"] > 0.9
+    assert portfolio["stats"]["max_drawdown"] > -0.25
 
 
 def test_b_v2_first_result_is_rejected_without_retuning():
