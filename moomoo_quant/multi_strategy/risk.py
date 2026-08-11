@@ -46,7 +46,7 @@ def evaluate_risk(
     if input_data.total_target_jpy > input_data.portfolio_limit_jpy + 1e-8:
         reasons.append("PORTFOLIO_LIMIT_EXCEEDED")
 
-    if scope is RiskScope.PROPOSAL_SCOPE:
+    if scope in (RiskScope.PROPOSAL_SCOPE, RiskScope.SIMULATE_SCOPE):
         if input_data.kill_switch:
             reasons.append("KILL_SWITCHED")
         if not input_data.opend_healthy:
@@ -64,10 +64,12 @@ def evaluate_risk(
         status = RiskStatus.REJECTED
     elif scope is RiskScope.SHADOW_SCOPE:
         status = RiskStatus.APPROVED_FOR_SHADOW
+    elif scope is RiskScope.SIMULATE_SCOPE:
+        status = RiskStatus.APPROVED_FOR_SIMULATE
     else:
         status = RiskStatus.APPROVED_FOR_PROPOSAL
     return RiskDecision(
-        decision_id=f"risk:{input_data.input_snapshot_id}:{config.RISK_POLICY_VERSION}",
+        decision_id=f"risk:{input_data.input_snapshot_id}:{scope.value}:{config.RISK_POLICY_VERSION}",
         status=status,
         reasons=tuple(reasons),
         checked_at=checked_at,

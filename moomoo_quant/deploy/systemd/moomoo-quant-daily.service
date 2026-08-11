@@ -15,6 +15,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=QUANT_ADMIN_MODE=false
 Environment=QUANT_KILL_SWITCH=true
 Environment=MOOMOO_SIMULATE_ENABLED=false
+Environment=MOOMOO_SIMULATE_KILL_SWITCH=true
 ExecStart=/opt/stacks/moomoo-quant/.venv/bin/python -m moomoo_quant.jobs.shadow_runner --run-once
 NoNewPrivileges=true
 PrivateTmp=true
