@@ -1,0 +1,58 @@
+{
+  "run_id": "trend-v1-20260811T034406367469Z-7e2819d418",
+  "strategy_id": "jpy-multi-asset-trend",
+  "strategy_name": "JPY Multi-Asset Trend",
+  "strategy_version": "1",
+  "parameters": {
+    "assets": [
+      "US.SPY",
+      "US.QQQ",
+      "US.GLD",
+      "US.IEF"
+    ],
+    "momentum_months": 12,
+    "sma_months": 10,
+    "max_assets": 2,
+    "asset_weight": 0.5,
+    "signal_timing": "month-end close",
+    "execution_timing": "next common trading-day open",
+    "slippage_bps": 5.0,
+    "fx_conversion_cost_bps": 0.0
+  },
+  "parameters_hash": "cb944dfd98b88438ee9d0b5b92de068ab2b465b34a614a8841759c17c5de3f84",
+  "data_start_date": "2007-01-03",
+  "data_end_date": "2026-08-10",
+  "market_data_last_date": "2026-08-10",
+  "usdjpy_last_date": "2026-08-11",
+  "generated_at": "2026-08-11T03:44:06.367469+00:00",
+  "cost_model_version": "moomoo-jp-basic-v1",
+  "base_currency": "JPY",
+  "data_file_hashes": {
+    "GLD_daily.csv": "21e55601474198a3d9d0132e78fa81f2db936f6d9030ea9197948a938d47c8c6",
+    "IEF_daily.csv": "1511f783296c7bd3b7ae244f815083527a122b512f94f8ce9ef6e0117e71ed21",
+    "QQQ_daily.csv": "ec76e509dceaf6bc0f9487ac758499e2b31df3e90f07e6b805af65266605d822",
+    "SPY_daily.csv": "2eab6db58409ef4b8872303ea3b415087d269ef30ca2de4b18f63da5f11c4030",
+    "USDJPY_daily.csv": "b5dee9708049696116efed09adcc9908be518c123426915c35e83fae0acf1fd1"
+  },
+  "commit_sha": null,
+  "backtest_engine_version": "trend-engine-v1.0",
+  "artifacts": [
+    "trend_equity_curve.csv",
+    "trend_trades.csv",
+    "trend_rebalance_history.csv",
+    "trend_allocations.csv",
+    "trend_yearly_performance.csv",
+    "trend_comparison_equity.csv",
+    "trend_performance_comparison.csv",
+    "trend_yearly_comparison.csv",
+    "trend_monthly_returns.csv",
+    "trend_crisis_monthly.csv",
+    "trend_asset_prices_jpy.csv",
+    "trend_data_metadata.csv",
+    "trend_current_signal.csv",
+    "trend_robustness.csv",
+    "trend_oos_performance.csv",
+    "crisis_2022_monthly.csv",
+    "crisis_2022_summary.json"
+  ]
+}

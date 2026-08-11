@@ -1,0 +1,23 @@
+[Unit]
+Description=Moomoo Quant Daily Market and Shadow Update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+User=moomooquant
+Group=moomooquant
+WorkingDirectory=/opt/stacks/moomoo-quant
+Environment=MOOMOO_QUANT_DATA_ROOT=/opt/data/moomoo-quant
+Environment=HOME=/opt/data/moomoo-quant
+Environment=PYTHONUNBUFFERED=1
+Environment=QUANT_ADMIN_MODE=false
+Environment=QUANT_KILL_SWITCH=true
+Environment=MOOMOO_SIMULATE_ENABLED=false
+ExecStart=/opt/stacks/moomoo-quant/.venv/bin/python -m moomoo_quant.jobs.shadow_runner --run-once
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/data/moomoo-quant

@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Credentials and machine-local configuration
+.env
+.env.*
+!.env.example
+**/.streamlit/secrets.toml
+*.key
+*.pem
+*.p12
+*.pfx
+*.ppk
+id_rsa*
+id_ed25519*
+.htpasswd
+
+# Local runtime state
+/outputs/
+/work/
+/moomoo_quant/data/*
+/moomoo_quant/logs/*
+/moomoo_quant/shadow/*
+/moomoo_quant/multi_strategy/*.sqlite3*
+
+# Keep the published research artifacts and current frozen run, but not old runs.
+/moomoo_quant/results/runs/*
+!/moomoo_quant/results/runs/trend-v1-20260811T034406367469Z-7e2819d418/
+!/moomoo_quant/results/runs/trend-v1-20260811T034406367469Z-7e2819d418/**
+
+# Deployment bundles and temporary archives
+*.tar.gz
+*.tgz
+*.zip
+

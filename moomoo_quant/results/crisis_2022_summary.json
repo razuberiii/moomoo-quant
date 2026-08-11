@@ -1,0 +1,58 @@
+{
+  "year_return": -0.17919808885922262,
+  "worst_months": [
+    {
+      "month": "2022-01",
+      "return": -0.06852340009354918,
+      "holdings": {
+        "SPY": 0.5078602340230869,
+        "QQQ": 0.49213976597691306
+      }
+    },
+    {
+      "month": "2022-12",
+      "return": -0.055758425248800925,
+      "holdings": {
+        "SPY": 0.48932782454552703,
+        "GLD": 0.5106721754544727
+      }
+    },
+    {
+      "month": "2022-04",
+      "return": -0.05276409913893598,
+      "holdings": {
+        "SPY": 0.5084394144764238,
+        "QQQ": 0.4915605855235762
+      }
+    }
+  ],
+  "spy_lost_eligible": [
+    "2022-06",
+    "2022-09",
+    "2022-12"
+  ],
+  "qqq_lost_eligible": [
+    "2022-02",
+    "2022-04",
+    "2022-08"
+  ],
+  "gld_held_months": [
+    "2022-03",
+    "2022-05",
+    "2022-06",
+    "2022-07",
+    "2022-08",
+    "2022-09",
+    "2022-10",
+    "2022-11",
+    "2022-12"
+  ],
+  "gld_average_return_when_held": 0.005247668049859026,
+  "ief_held_months": [
+    "2022-07",
+    "2022-10"
+  ],
+  "ief_average_return_when_held": 0.010830225804361215,
+  "alignment_audit_passed": true,
+  "implementation_assessment": "2022 drawdown is consistent with the fixed monthly trend rules and lagged signals; the FX alignment audit found no future-data fill."
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Moomoo Quant Daily Update at 07:15 JST Tuesday-Saturday
+
+[Timer]
+OnCalendar=Tue..Sat *-*-* 07:15:00 Asia/Tokyo
+Persistent=true
+Unit=moomoo-quant-daily.service
+
+[Install]
+WantedBy=timers.target

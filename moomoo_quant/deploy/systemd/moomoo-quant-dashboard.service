@@ -1,0 +1,26 @@
+[Unit]
+Description=Moomoo Quant Streamlit Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=moomooquant
+Group=moomooquant
+WorkingDirectory=/opt/stacks/moomoo-quant
+Environment=MOOMOO_QUANT_DATA_ROOT=/opt/data/moomoo-quant
+Environment=HOME=/opt/data/moomoo-quant
+Environment=PYTHONUNBUFFERED=1
+Environment=QUANT_ADMIN_MODE=false
+Environment=QUANT_KILL_SWITCH=true
+ExecStart=/opt/stacks/moomoo-quant/.venv/bin/python -m streamlit run moomoo_quant/dashboard.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true --browser.gatherUsageStats=false
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/data/moomoo-quant
+
+[Install]
+WantedBy=multi-user.target
