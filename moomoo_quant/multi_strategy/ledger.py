@@ -943,7 +943,22 @@ class ShadowLedger:
                 "SELECT 1 FROM simulate_cycle_events WHERE cycle_type='BOOTSTRAP' "
                 "AND state IN ('SUBMITTED', 'ALREADY_AT_TARGET') LIMIT 1"
             ).fetchone()
-            return row is not None
+            if row is not None:
+                return True
+            partial_row = conn.execute(
+                """
+                SELECT 1
+                FROM simulate_cycle_events c
+                WHERE c.cycle_type='BOOTSTRAP'
+                  AND c.state='ORDER_REJECTED'
+                  AND EXISTS (
+                    SELECT 1 FROM broker_order_records b
+                    WHERE b.order_id IS NOT NULL AND b.order_id != ''
+                  )
+                LIMIT 1
+                """
+            ).fetchone()
+            return partial_row is not None
 
     def rows(self, table: str) -> list[dict]:
         allowed = {

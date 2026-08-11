@@ -282,6 +282,43 @@ def test_simulate_cycle_ledger_marks_only_terminal_targets_processed(tmp_path):
     assert ledger.has_simulate_bootstrap()
 
 
+def test_rejected_bootstrap_without_broker_order_does_not_start_observer(tmp_path):
+    ledger = ShadowLedger(tmp_path / "ledger.db")
+    ledger.migrate()
+    ledger.record_simulate_cycle_event(
+        "digest-1",
+        "BOOTSTRAP",
+        "ORDER_REJECTED",
+        ["signal-a"],
+        {"submissions": [{"symbol": "US.SPY", "status": "REJECTED", "order_id": None}]},
+    )
+    assert not ledger.has_simulate_bootstrap()
+
+
+def test_partial_rejected_bootstrap_with_broker_order_starts_observer(tmp_path):
+    ledger = ShadowLedger(tmp_path / "ledger.db")
+    ledger.migrate()
+    ledger.record_simulate_cycle_event(
+        "digest-1",
+        "BOOTSTRAP",
+        "ORDER_REJECTED",
+        ["signal-a"],
+        {"submissions": [{"symbol": "US.IEF", "status": "SUBMITTED", "order_id": "7794062"}]},
+    )
+    ledger.record_broker_order_event(
+        "simulate-bootstrap:2026-08-11:digest-1",
+        "order-key-1",
+        "PORTFOLIO_MANAGER",
+        "US.IEF",
+        "BUY",
+        3.0,
+        "SUBMITTED",
+        "7794062",
+        {"broker_status": "SUBMITTING"},
+    )
+    assert ledger.has_simulate_bootstrap()
+
+
 def test_auto_requires_accepted_bootstrap_before_touching_opend(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LEDGER_PATH", tmp_path / "ledger.db")
     monkeypatch.setattr(config, "MOOMOO_SIMULATE_ENABLED", True)
