@@ -2,11 +2,38 @@ from __future__ import annotations
 
 import math
 
+import pandas as pd
+
 from .models import AggregatedTarget, MarketPrice, StrategyContribution, TargetRequest
 
 
 class PortfolioError(ValueError):
     pass
+
+
+def runtime_portfolio_totals(
+    accounts: pd.DataFrame,
+    equity_snapshots: pd.DataFrame,
+) -> tuple[float, float, int]:
+    """Combine latest account equity with cash for newly funded accounts."""
+    if accounts.empty:
+        return 0.0, 0.0, 0
+    funded = accounts[accounts["allocated_capital_jpy"] > 0]
+    if funded.empty:
+        return 0.0, 0.0, 0
+
+    allocated = float(funded["allocated_capital_jpy"].sum())
+    latest_by_account: dict[str, float] = {}
+    if not equity_snapshots.empty:
+        funded_ids = set(funded["account_id"])
+        latest = equity_snapshots[equity_snapshots["account_id"].isin(funded_ids)]
+        latest = latest.sort_values("market_date").groupby("account_id").tail(1)
+        latest_by_account = dict(zip(latest["account_id"], latest["equity_jpy"]))
+    total_equity = sum(
+        float(latest_by_account.get(row["account_id"], row["cash_jpy"]))
+        for _, row in funded.iterrows()
+    )
+    return allocated, total_equity, len(funded)
 
 
 def aggregate_targets(
