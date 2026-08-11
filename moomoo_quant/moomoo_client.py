@@ -5,10 +5,6 @@ from datetime import date
 from typing import Iterable
 
 import pandas as pd
-from moomoo import (
-    OpenQuoteContext,
-    RET_OK,
-)
 
 from . import config
 
@@ -31,6 +27,10 @@ def ensure_opend_reachable(timeout: float = 3.0) -> None:
 
 @contextmanager
 def quote_context():
+    # Import only when a caller explicitly opens the local quote gateway.  This
+    # keeps cached backtests, tests, and the read-only Dashboard broker-free.
+    from moomoo import OpenQuoteContext
+
     ctx = OpenQuoteContext(host=config.OPEND_HOST, port=config.OPEND_PORT)
     try:
         yield ctx
@@ -40,6 +40,8 @@ def quote_context():
 
 
 def _require_ok(ret_code: int, payload, action: str):
+    from moomoo import RET_OK
+
     if ret_code != RET_OK:
         raise MoomooApiError(f"{action} failed: {payload}")
     return payload

@@ -20,7 +20,7 @@ from moomoo_quant import config
 from moomoo_quant.run_manifest import resolve_current_run
 
 
-st.set_page_config(page_title="JPY 多策略量化研究", layout="wide")
+st.set_page_config(page_title="JPY 多策略量化控制台", layout="wide")
 
 PORTFOLIO_NAMES = {
     "Strategy": "JPY 多资产趋势 v1",
@@ -67,7 +67,7 @@ def load_dashboard_data() -> dict[str, pd.DataFrame]:
 def load_multi_strategy_data() -> dict:
     keys = (
         "strategies", "lifecycle", "risk", "proposals", "migrations", "signals",
-        "fills", "equity", "reconciliations", "runner_events", "broker_orders",
+        "fills", "equity", "positions", "reconciliations", "runner_events", "broker_orders",
     )
     output = {key: pd.DataFrame() for key in keys}
     if not config.LEDGER_PATH.exists():
@@ -83,6 +83,7 @@ def load_multi_strategy_data() -> dict:
             ("signals", "signals"),
             ("fills", "virtual_fills"),
             ("equity", "equity_snapshots"),
+            ("positions", "strategy_positions"),
             ("reconciliations", "reconciliation_records"),
             ("runner_events", "shadow_run_events"),
             ("broker_orders", "broker_order_records"),
@@ -121,7 +122,10 @@ def load_research_data(prefix: str) -> dict:
     output = {"summary": json.loads(summary_path.read_text(encoding="utf-8"))}
     for key in ("equity", "trades", "monthly", "yearly", "stability", "signals"):
         path = config.RESULTS_DIR / f"{prefix}_{key}.csv"
-        output[key] = pd.read_csv(path) if path.exists() else pd.DataFrame()
+        try:
+            output[key] = pd.read_csv(path) if path.exists() else pd.DataFrame()
+        except pd.errors.EmptyDataError:
+            output[key] = pd.DataFrame()
     return output
 
 
@@ -148,6 +152,7 @@ STATUS_NAMES = {
     "PENDING_REBALANCE": "等待下一交易日开盘理论记账",
     "NO_ACTION": "等待下一次月末信号",
     "WAITING_NEXT_MONTH_END": "等待下一次月末信号",
+    "WAITING_NEXT_HALF_YEAR_END": "等待下一次半年末信号",
     "RESEARCH_REJECTED": "研究门槛未通过",
     "PROPOSED_ONLY": "拟议订单（不会发送）",
     "REJECTED": "已拒绝",
@@ -623,11 +628,11 @@ def _target_text(summary: dict, symbols: tuple[str, ...]) -> str:
 def portfolio_overview(
     data: dict,
     multi: dict,
-    stress: dict,
+    defensive_factor: dict,
     risk_parity: dict,
 ) -> None:
-    st.title("组合总览")
-    st.warning("研究与影子记账模式。Kill switch 默认开启，不连接交易账户，不会发送任何订单。")
+    st.title("运行总览")
+    st.warning("当前为 Forward Shadow。Kill switch 开启；不连接交易账户，不发送 SIMULATE 或 REAL 订单。")
     accounts = multi["strategies"]
     funded = accounts[accounts["allocated_capital_jpy"] > 0] if not accounts.empty else pd.DataFrame()
     allocated = float(funded["allocated_capital_jpy"].sum()) if not funded.empty else config.PORTFOLIO_CAPITAL_JPY
@@ -635,14 +640,14 @@ def portfolio_overview(
     if not multi["equity"].empty and not funded.empty:
         latest_equity = multi["equity"].sort_values("market_date").groupby("account_id").tail(1)
         total_equity = float(latest_equity["equity_jpy"].sum())
-    metrics = st.columns(3)
+    metrics = st.columns(4)
     metrics[0].metric("分配资金", f"¥{allocated:,.0f}")
-    metrics[1].metric("未通过研究预算", f"¥{max(300_000 - allocated, 0):,.0f}")
-    metrics[2].metric("影子组合净值", f"¥{total_equity:,.0f}")
-    metrics_two = st.columns(3)
-    metrics_two[0].metric("前向影子收益", f"{total_equity / allocated - 1:.2%}" if allocated else "—")
-    metrics_two[1].metric("Kill switch", "开启")
-    metrics_two[2].metric("数据更新时间", date_text(data["manifest"].get("market_data_last_date")))
+    metrics[1].metric("影子组合净值", f"¥{total_equity:,.0f}")
+    metrics[2].metric("前向影子收益", f"{total_equity / allocated - 1:.2%}" if allocated else "—")
+    metrics[3].metric("运行机器人", f"{len(funded) if not funded.empty else 0} / 3")
+    status_cols = st.columns(2)
+    status_cols[0].metric("Kill switch", "开启")
+    status_cols[1].metric("数据更新时间", date_text(data["manifest"].get("market_data_last_date")))
 
     st.subheader("策略机器人")
     left, middle, right = st.columns(3)
@@ -659,16 +664,16 @@ def portfolio_overview(
         st.write(f"最近信号：**{date_text(current['signal_date'])}**")
         st.write("状态：**等待下一次月末信号**")
     with middle.container(border=True):
-        summary = stress.get("summary", {})
+        summary = defensive_factor.get("summary", {})
         stats = summary.get("stats", {})
-        st.markdown("### Robot B · 压力回撤均值回归 v2")
-        st.write("阶段：**研究拒绝（RESEARCH_REJECTED）**")
-        st.write(f"分配资金：**¥{float(summary.get('budget_jpy', 0)):,.0f}**")
+        account = _account_row(multi, config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
+        st.markdown("### Robot B · 美股质量低波动 v2")
+        st.write("阶段：**影子（SHADOW）**")
+        st.write(f"分配资金：**¥{float(account.get('allocated_capital_jpy', summary.get('budget_jpy', 0))):,.0f}**")
         st.write(f"历史年化收益率：**{stats.get('cagr', 0):.2%}**")
         st.write(f"历史最大回撤：**{stats.get('max_drawdown', 0):.2%}**")
-        st.write("当前仓位：**日元现金 100%**")
-        rejection = "、".join(summary.get("rejection_reasons", [])) or "等待首次研究"
-        st.write(f"拒绝原因：**{rejection}**")
+        st.write(f"当前目标：**{_target_text(summary, ('QUAL', 'USMV'))}**")
+        st.write("状态：**等待下一次半年末信号**")
     with right.container(border=True):
         summary = risk_parity.get("summary", {})
         stats = summary.get("stats", {})
@@ -681,45 +686,67 @@ def portfolio_overview(
         st.write(f"当前目标：**{_target_text(summary, ('SPY', 'GLD', 'IEF'))}**")
         st.write("状态：**等待下一次真实月末信号**")
 
-    st.caption("对照组仍然只是研究基准，不拥有预算、生命周期、仓位或订单。")
+    st.caption("失败策略已移入历史档案；Benchmark 只在机器人详情中作为对照，不拥有预算、仓位或订单。")
 
 
-def merged_holdings(data: dict, multi: dict, risk_parity: dict) -> None:
-    st.title("合并后的理论证券持仓")
-    st.warning("这是合并后的理论券商目标持仓，目前不会发送订单。初始基准信号不追溯执行。")
+def merged_holdings(data: dict, multi: dict, defensive_factor: dict, risk_parity: dict) -> None:
+    st.title("合并理论持仓")
+    st.warning("Portfolio Manager 已按机器人预算合并目标；当前只展示理论数量，不发送订单。")
     current = data["current"].iloc[-1]
+    factor_latest = defensive_factor.get("summary", {}).get("latest_target", {})
+    parity_latest = risk_parity.get("summary", {}).get("latest_target", {})
+    budgets = {
+        "Robot A · 趋势 v1": float(_account_row(multi, config.TREND_STRATEGY_ID, "1").get("allocated_capital_jpy", 0)),
+        "Robot B · 质量低波动 v2": float(_account_row(multi, config.DEFENSIVE_FACTOR_STRATEGY_ID, "2").get("allocated_capital_jpy", 0)),
+        "Robot C · 风险平价 v1": float(_account_row(multi, config.RISK_PARITY_STRATEGY_ID, "1").get("allocated_capital_jpy", 0)),
+    }
+    targets = {
+        "Robot A · 趋势 v1": {symbol: float(current[f"{symbol}_weight"]) for symbol in ("SPY", "QQQ", "GLD", "IEF")},
+        "Robot B · 质量低波动 v2": {symbol: float(factor_latest.get(f"{symbol}_weight", 0)) for symbol in ("QUAL", "USMV")},
+        "Robot C · 风险平价 v1": {symbol: float(parity_latest.get(f"{symbol}_weight", 0)) for symbol in ("SPY", "GLD", "IEF")},
+    }
+    prices = {symbol: float(current[f"{symbol}_jpy_price"]) for symbol in ("SPY", "QQQ", "GLD", "IEF")}
+    prices.update({symbol: float(factor_latest.get(f"{symbol}_jpy_price", 0)) for symbol in ("QUAL", "USMV")})
+    dates = {symbol: date_text(current["signal_date"]) for symbol in ("SPY", "QQQ", "GLD", "IEF")}
+    dates.update({symbol: date_text(factor_latest.get("signal_date")) for symbol in ("QUAL", "USMV")})
+    positions = multi.get("positions", pd.DataFrame())
+    current_quantities = positions.groupby("symbol")["quantity"].sum().to_dict() if not positions.empty else {}
+    symbols = ("SPY", "QQQ", "GLD", "IEF", "QUAL", "USMV")
+    contributions: dict[str, list[dict]] = {symbol: [] for symbol in symbols}
     rows = []
-    contributions: dict[str, list[dict]] = {symbol: [] for symbol in ("SPY", "QQQ", "GLD", "IEF")}
-    parity_summary = risk_parity.get("summary", {})
-    parity_latest = parity_summary.get("latest_target", {})
-    trend_budget = float(_account_row(multi, config.TREND_STRATEGY_ID, "1").get("allocated_capital_jpy", 100_000))
-    parity_budget = float(_account_row(multi, config.RISK_PARITY_STRATEGY_ID, "1").get("allocated_capital_jpy", 0))
-    total_budget = trend_budget + parity_budget
-    for symbol in ("SPY", "QQQ", "GLD", "IEF"):
-        trend_weight = float(current[f"{symbol}_weight"])
-        parity_weight = float(parity_latest.get(f"{symbol}_weight", 0)) if parity_budget else 0.0
-        price_jpy = float(current[f"{symbol}_jpy_price"])
-        trend_notional = trend_budget * trend_weight
-        parity_notional = parity_budget * parity_weight
-        notional = trend_notional + parity_notional
-        quantity = notional / price_jpy if price_jpy > 0 else 0.0
-        if trend_weight:
-            contributions[symbol].append({"机器人": "Robot A · 趋势 v1", "理论碎股数量": trend_notional / price_jpy, "目标名义金额（日元）": trend_notional, "策略内目标权重": trend_weight * 100})
-        if parity_weight:
-            contributions[symbol].append({"机器人": "Robot C · 风险平价 v1", "理论碎股数量": parity_notional / price_jpy, "目标名义金额（日元）": parity_notional, "策略内目标权重": parity_weight * 100})
+    total_budget = sum(budgets.values())
+    for symbol in symbols:
+        price_jpy = prices.get(symbol, 0.0)
+        notional = 0.0
+        for robot, robot_targets in targets.items():
+            weight = robot_targets.get(symbol, 0.0)
+            if weight <= 0 or budgets[robot] <= 0:
+                continue
+            robot_notional = budgets[robot] * weight
+            notional += robot_notional
+            contributions[symbol].append(
+                {
+                    "机器人": robot,
+                    "理论碎股数量": robot_notional / price_jpy if price_jpy else 0.0,
+                    "目标名义金额（日元）": robot_notional,
+                    "策略内目标权重": weight * 100,
+                }
+            )
+        target_quantity = notional / price_jpy if price_jpy else 0.0
+        current_quantity = float(current_quantities.get(symbol, 0.0))
         rows.append(
             {
                 "标的": symbol,
-                "聚合目标碎股数量": quantity,
-                "整股可执行估算": math.floor(quantity),
+                "聚合目标碎股数量": target_quantity,
+                "整股可执行估算": math.floor(target_quantity),
                 "聚合目标金额（日元）": notional,
-                "当前理论数量": 0.0,
-                "当前市值（日元）": 0.0,
+                "当前影子数量": current_quantity,
+                "当前影子市值（日元）": current_quantity * price_jpy,
                 "组合目标权重": notional / total_budget * 100 if total_budget else 0.0,
-                "拟议净变化": "未生成（基准不追溯）" if notional else "0",
-                "贡献策略": "、".join(item["机器人"] for item in contributions[symbol]) or "无",
-                "数据日期": date_text(current["signal_date"]),
-                "风险状态": "Kill switch：已拒绝生成",
+                "理论差额数量": target_quantity - current_quantity,
+                "贡献机器人": "、".join(item["机器人"] for item in contributions[symbol]) or "无",
+                "目标数据日期": dates[symbol],
+                "订单状态": "未生成（Kill switch 开启）",
             }
         )
     holdings = pd.DataFrame(rows)
@@ -730,12 +757,13 @@ def merged_holdings(data: dict, multi: dict, risk_parity: dict) -> None:
         column_config={
             "聚合目标碎股数量": st.column_config.NumberColumn(format="%.6f"),
             "聚合目标金额（日元）": st.column_config.NumberColumn(format="¥%.0f"),
+            "当前影子市值（日元）": st.column_config.NumberColumn(format="¥%.0f"),
             "组合目标权重": st.column_config.NumberColumn(format="%.0f%%"),
         },
     )
     st.download_button("下载合并目标 CSV", holdings.to_csv(index=False).encode("utf-8-sig"), "aggregated_targets.csv", "text/csv")
     st.subheader("策略贡献明细")
-    for symbol in ("SPY", "QQQ", "GLD", "IEF"):
+    for symbol in symbols:
         if not contributions[symbol]:
             continue
         with st.expander(f"{symbol} 的策略归属"):
@@ -798,9 +826,9 @@ def research_detail(title: str, research: dict, correlation_labels: tuple[str, .
     summary = research["summary"]
     stats = summary["stats"]
     if summary["status"] == "SHADOW":
-        st.success("预注册门槛全部通过；已建立本地影子账户，等待下一次真实信号，不追溯成交。")
+        st.success("固定规格验收全部通过；已进入 Forward Shadow，历史信号不追溯成交。")
     else:
-        st.error("预注册门槛未全部通过；预算保持 ¥0，不建立影子账户或拟议订单。")
+        st.error("固定规格验收未通过；已归档，预算为 ¥0。")
     cols = st.columns(4)
     cols[0].metric("净收益（日元）", pct(stats["net_return"]))
     cols[1].metric("年化收益率", pct(stats["cagr"]))
@@ -823,7 +851,7 @@ def research_detail(title: str, research: dict, correlation_labels: tuple[str, .
             label = "与 Robot A 相关性" if "trend" in key else "与其他候选机器人相关性"
             details.append((label, f"{summary[key]:.3f}"))
     st.dataframe(pd.DataFrame(details, columns=["指标", "首次正式结果"]), hide_index=True, width="stretch")
-    st.subheader("验收门槛")
+    st.subheader("固定验收结果")
     st.dataframe(
         pd.DataFrame([{"预注册门槛": key, "结果": "通过" if value else "未通过"} for key, value in summary["acceptance_gates"].items()]),
         hide_index=True,
@@ -834,39 +862,76 @@ def research_detail(title: str, research: dict, correlation_labels: tuple[str, .
     figure = go.Figure(go.Scatter(x=equity["date"], y=equity["equity_jpy"], name="净值（日元）", mode="lines"))
     figure.update_layout(yaxis_title="净值（日元）", hovermode="x unified")
     st.plotly_chart(figure, width="stretch")
-    st.subheader("附近参数稳定性诊断")
-    st.caption("下表只用于识别脆弱性，不参与选择参数，也不会覆盖首次正式结果。")
-    st.dataframe(research["stability"], hide_index=True, width="stretch")
+    if not research["stability"].empty:
+        st.subheader("稳定性诊断")
+        st.caption("只用于识别脆弱性，不参与选择参数，也不会覆盖首次正式结果。")
+        st.dataframe(research["stability"], hide_index=True, width="stretch")
 
 
-def robot_details(data: dict, mr: dict, stress: dict, risk_parity: dict) -> None:
+def robot_details(
+    data: dict,
+    mr: dict,
+    stress: dict,
+    defensive_factor_v1: dict,
+    defensive_factor_v2: dict,
+    risk_parity: dict,
+) -> None:
     st.title("机器人详情")
     robot = st.selectbox(
         "选择机器人",
         (
             "Robot A · JPY 多资产趋势 v1",
-            "Robot B · 压力回撤均值回归 v2",
+            "Robot B · 美股质量低波动 v2",
             "Robot C · JPY 无杠杆风险平价 v1",
         ),
     )
     if robot.startswith("Robot B"):
-        tabs = st.tabs(("首次正式研究", "历史版本：均值回归 v1"))
+        tabs = st.tabs(("运行状态", "历史回测", "前向影子", "历史档案"))
         with tabs[0]:
+            summary = defensive_factor_v2.get("summary", {})
+            st.subheader("Robot B · 美股质量低波动 v2")
+            cols = st.columns(4)
+            cols[0].metric("阶段", "SHADOW")
+            cols[1].metric("分配资金", f"¥{float(summary.get('budget_jpy', 0)):,.0f}")
+            cols[2].metric("当前目标", _target_text(summary, ("QUAL", "USMV")))
+            cols[3].metric("下次检查", "6 月或 12 月月末")
+            st.caption("质量 + 低波动因子，固定 50% / 50%，半年调仓；不使用趋势、动量或均值回归。")
+        with tabs[1]:
             research_detail(
-                "Stress Pullback Mean Reversion v2",
-                stress,
+                "US Quality & Low Volatility v2",
+                defensive_factor_v2,
                 ("monthly_correlation_with_trend_v1", "monthly_correlation_with_risk_parity_v1"),
             )
-        with tabs[1]:
-            mean_reversion_detail(data, mr)
+        with tabs[2]:
+            st.info("2026-06-30 只作为初始基线，不追溯成交；等待 2026-12 的真实半年末信号。")
+        with tabs[3]:
+            archived = []
+            for name, item in (
+                ("防御多因子 v1", defensive_factor_v1),
+                ("压力回撤均值回归 v2", stress),
+                ("短期均值回归 v1", mr),
+            ):
+                summary = item.get("summary", {}) if item else {}
+                stats = summary.get("stats", {})
+                archived.append(
+                    {
+                        "策略": name,
+                        "状态": summary.get("status", "RESEARCH_REJECTED"),
+                        "年化收益率": stats.get("cagr"),
+                        "最大回撤": stats.get("max_drawdown"),
+                        "预算": "¥0",
+                        "原因": "、".join(summary.get("rejection_reasons", [])) or "历史成本后门槛未通过",
+                    }
+                )
+            st.dataframe(pd.DataFrame(archived), hide_index=True, width="stretch")
         return
     if robot.startswith("Robot C"):
-        tabs = st.tabs(("首次正式研究", "目标风险分配", "前向影子"))
+        tabs = st.tabs(("历史回测", "目标风险分配", "前向影子"))
         with tabs[0]:
             research_detail(
                 "JPY Unlevered Risk Parity v1",
                 risk_parity,
-                ("monthly_correlation_with_trend_v1", "monthly_correlation_with_stress_pullback_v2"),
+                ("monthly_correlation_with_trend_v1", "monthly_correlation_with_defensive_factor_v2"),
             )
         with tabs[1]:
             latest = risk_parity.get("summary", {}).get("latest_target", {})
@@ -898,16 +963,16 @@ def robot_details(data: dict, mr: dict, stress: dict, risk_parity: dict) -> None
         st.dataframe(manifest_rows, hide_index=True, width="stretch")
 
 
-def robot_comparison(data: dict, stress: dict, risk_parity: dict, multi: dict) -> None:
-    st.title("三机器人比较")
+def robot_comparison(data: dict, defensive_factor: dict, risk_parity: dict, multi: dict) -> None:
+    st.title("运行策略比较")
     trend = data["performance"].iloc[0]
-    stress_summary = stress.get("summary", {})
+    factor_summary = defensive_factor.get("summary", {})
     parity_summary = risk_parity.get("summary", {})
-    stress_stats = stress_summary.get("stats", {})
+    factor_stats = factor_summary.get("stats", {})
     parity_stats = parity_summary.get("stats", {})
     rows = [
         {"策略": "Robot A · 趋势", "版本": "1", "生命周期": "SHADOW", "预算": "¥100,000", "年化收益率": pct(trend["cagr"]), "最大回撤": pct(trend["max_drawdown"]), "夏普比率": f"{trend['sharpe']:.3f}", "净收益": pct(trend["total_return"]), "换手率": "—", "成本（日元）": "—", "当前仓位": "SPY 50%、QQQ 50%", "下一检查": "下一个美股月末", "拒绝原因": ""},
-        {"策略": "Robot B · 压力回撤", "版本": "2", "生命周期": stress_summary.get("status", "RESEARCH"), "预算": f"¥{float(stress_summary.get('budget_jpy', 0)):,.0f}", "年化收益率": pct(stress_stats.get("cagr")), "最大回撤": pct(stress_stats.get("max_drawdown")), "夏普比率": f"{stress_stats.get('sharpe', 0):.3f}", "净收益": pct(stress_stats.get("net_return")), "换手率": f"{stress_stats.get('turnover', 0):.2f}x", "成本（日元）": f"¥{stress_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": "日元现金 100%", "下一检查": "无（研究拒绝）", "拒绝原因": "、".join(stress_summary.get("rejection_reasons", []))},
+        {"策略": "Robot B · 质量低波动", "版本": "2", "生命周期": factor_summary.get("status", "SHADOW"), "预算": f"¥{float(factor_summary.get('budget_jpy', 0)):,.0f}", "年化收益率": pct(factor_stats.get("cagr")), "最大回撤": pct(factor_stats.get("max_drawdown")), "夏普比率": f"{factor_stats.get('sharpe', 0):.3f}", "净收益": pct(factor_stats.get("net_return")), "换手率": f"{factor_stats.get('annualized_turnover', 0):.2f}x/年", "成本（日元）": f"¥{factor_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": _target_text(factor_summary, ("QUAL", "USMV")), "下一检查": "下一个半年末", "拒绝原因": ""},
         {"策略": "Robot C · 风险平价", "版本": "1", "生命周期": parity_summary.get("status", "RESEARCH"), "预算": f"¥{float(parity_summary.get('budget_jpy', 0)):,.0f}", "年化收益率": pct(parity_stats.get("cagr")), "最大回撤": pct(parity_stats.get("max_drawdown")), "夏普比率": f"{parity_stats.get('sharpe', 0):.3f}", "净收益": pct(parity_stats.get("net_return")), "换手率": f"{parity_stats.get('turnover', 0):.2f}x", "成本（日元）": f"¥{parity_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": _target_text(parity_summary, ("SPY", "GLD", "IEF")), "下一检查": "下一个美股月末", "拒绝原因": "、".join(parity_summary.get("rejection_reasons", []))},
     ]
     comparison = pd.DataFrame(rows)
@@ -926,7 +991,7 @@ def robot_comparison(data: dict, stress: dict, risk_parity: dict, multi: dict) -
 
 
 def safety_records(multi: dict) -> None:
-    st.title("安全与运行记录")
+    st.title("运行与安全")
     st.error("拟议订单（仅理论计算，不会发送）")
     st.write("Moomoo SIMULATE：已实现，等待用户单独批准启用。当前固定配置为关闭，页面没有启用入口。")
     st.caption("Execution Scope 始终禁用；不读取交易账户，不解锁交易，不发送任何订单。")
@@ -949,7 +1014,7 @@ def safety_records(multi: dict) -> None:
     st.caption("不存在自动生命周期升级。SIMULATE 适配器默认禁用；本项目没有 REAL 适配器。")
     st.subheader("Forward Shadow Runner")
     if multi["runner_events"].empty:
-        st.info("尚无前向事件。Robot A 与 Robot C 正等待下一个真实月末。")
+        st.info("尚无前向事件。Robot A / C 等待月末；Robot B 等待半年末。")
     else:
         events = multi["runner_events"].drop(columns=["details_json"], errors="ignore")
         events["state"] = events["state"].map(lambda value: STATUS_NAMES.get(value, value))
@@ -959,11 +1024,11 @@ def safety_records(multi: dict) -> None:
     st.dataframe(multi["migrations"], hide_index=True, width="stretch")
 
 
-st.sidebar.title("量化研究看板")
-page = st.sidebar.radio("页面", ("组合总览", "机器人详情", "三机器人比较", "合并理论持仓", "安全与运行记录"))
+st.sidebar.title("JPY 量化控制台")
+page = st.sidebar.radio("页面", ("运行总览", "机器人详情", "运行策略比较", "合并理论持仓", "运行与安全"))
 if config.QUANT_ADMIN_MODE:
     if st.sidebar.button("重新运行回测", type="secondary", width="stretch"):
-        with st.spinner("正在更新市场数据并重建研究结果……"):
+        with st.spinner("正在更新市场数据并重建历史结果……"):
             from moomoo_quant.backtest.trend_analysis import run_full_trend_analysis
 
             run_full_trend_analysis()
@@ -984,15 +1049,24 @@ except FileNotFoundError as exc:
 multi_strategy_data = load_multi_strategy_data()
 mean_reversion_data = load_mean_reversion_data()
 stress_pullback_data = load_research_data("stress_pullback_v2")
+defensive_factor_v1_data = load_research_data("defensive_factor_v1")
+defensive_factor_v2_data = load_research_data("defensive_factor_v2")
 risk_parity_data = load_research_data("risk_parity_v1")
 
-if page == "组合总览":
-    portfolio_overview(dashboard_data, multi_strategy_data, stress_pullback_data, risk_parity_data)
+if page == "运行总览":
+    portfolio_overview(dashboard_data, multi_strategy_data, defensive_factor_v2_data, risk_parity_data)
 elif page == "机器人详情":
-    robot_details(dashboard_data, mean_reversion_data, stress_pullback_data, risk_parity_data)
-elif page == "三机器人比较":
-    robot_comparison(dashboard_data, stress_pullback_data, risk_parity_data, multi_strategy_data)
+    robot_details(
+        dashboard_data,
+        mean_reversion_data,
+        stress_pullback_data,
+        defensive_factor_v1_data,
+        defensive_factor_v2_data,
+        risk_parity_data,
+    )
+elif page == "运行策略比较":
+    robot_comparison(dashboard_data, defensive_factor_v2_data, risk_parity_data, multi_strategy_data)
 elif page == "合并理论持仓":
-    merged_holdings(dashboard_data, multi_strategy_data, risk_parity_data)
+    merged_holdings(dashboard_data, multi_strategy_data, defensive_factor_v2_data, risk_parity_data)
 else:
     safety_records(multi_strategy_data)

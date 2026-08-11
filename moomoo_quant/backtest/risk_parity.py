@@ -48,6 +48,9 @@ def risk_parity_signals(daily: dict[str, pd.DataFrame], params: dict) -> pd.Data
     prices = pd.DataFrame({symbol: daily[symbol]["jpy_close"] for symbol in assets}, index=common_index)
     log_returns = np.log(prices / prices.shift(1))
     month_ends = prices.groupby(prices.index.to_period("M")).tail(1).index
+    current_period = pd.Timestamp.today().to_period("M")
+    if len(month_ends) and month_ends[-1].to_period("M") == current_period:
+        month_ends = month_ends[:-1]
     previous = pd.Series(0.0, index=assets)
     rows: list[dict] = []
     for dt in month_ends:
@@ -162,6 +165,7 @@ def run_risk_parity_v1() -> dict:
     stats, monthly, yearly = formal["stats"], formal["monthly"], formal["yearly"]
     trend_corr = monthly_correlation(monthly, "trend_monthly_returns.csv")
     stress_corr = monthly_correlation(monthly, "stress_pullback_v2_monthly.csv")
+    factor_corr = monthly_correlation(monthly, "defensive_factor_v2_monthly.csv")
     oos = segment_metrics(formal["equity"], start=params["oos_start"])
     insample = segment_metrics(formal["equity"], end="2018-12-31")
     alignment = all(
@@ -229,6 +233,7 @@ def run_risk_parity_v1() -> dict:
         "crisis_returns": crisis_returns(monthly),
         "monthly_correlation_with_trend_v1": trend_corr,
         "monthly_correlation_with_stress_pullback_v2": stress_corr,
+        "monthly_correlation_with_defensive_factor_v2": factor_corr,
         "year_concentration": yearly_concentration(yearly),
         "acceptance_gates": gates,
         "rejection_reasons": [name for name, passed in gates.items() if not passed],

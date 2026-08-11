@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from moomoo import TrdEnv
-
 from .. import config
 from ..multi_strategy.ledger import ShadowLedger
 from ..multi_strategy.models import BrokerOrderStatus, ProposedOrder, RiskDecision, RiskScope, RiskStatus
@@ -16,6 +14,9 @@ class SimulateExecutionDisabled(RuntimeError):
 
 class SimulateSafetyError(RuntimeError):
     pass
+
+
+SIMULATE_ENVIRONMENT = "SIMULATE"
 
 
 class SimulateGateway(Protocol):
@@ -45,7 +46,7 @@ class MoomooSimulateExecutionAdapter:
     production configuration remains disabled and has no gateway implementation.
     """
 
-    trading_environment = TrdEnv.SIMULATE
+    trading_environment = SIMULATE_ENVIRONMENT
 
     def __init__(
         self,
@@ -53,12 +54,12 @@ class MoomooSimulateExecutionAdapter:
         gateway: SimulateGateway,
         *,
         enabled: bool = config.MOOMOO_SIMULATE_ENABLED,
-        requested_environment: object = TrdEnv.SIMULATE,
-        symbol_allowlist: frozenset[str] = frozenset({"US.SPY", "US.QQQ", "US.GLD", "US.IEF"}),
+        requested_environment: object = SIMULATE_ENVIRONMENT,
+        symbol_allowlist: frozenset[str] = frozenset({"US.SPY", "US.QQQ", "US.GLD", "US.IEF", "US.QUAL", "US.USMV"}),
         strategy_allowlist: frozenset[str] = frozenset(),
         maximum_quantity: float = 10_000.0,
     ):
-        if requested_environment != TrdEnv.SIMULATE:
+        if requested_environment != SIMULATE_ENVIRONMENT:
             raise SimulateSafetyError("Only the fixed SIMULATE environment is accepted")
         self.ledger = ledger
         self.gateway = gateway
