@@ -18,6 +18,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from moomoo_quant import config
 from moomoo_quant.multi_strategy.admission import load_admission
+from moomoo_quant.multi_strategy.portfolio import runtime_portfolio_totals
 from moomoo_quant.run_manifest import resolve_current_run
 
 
@@ -673,21 +674,17 @@ def portfolio_overview(
     st.title("运行总览")
     st.warning("当前为 Forward Shadow。Kill switch 开启；不连接交易账户，不发送 SIMULATE 或 REAL 订单。")
     accounts = multi["strategies"]
-    funded = accounts[accounts["allocated_capital_jpy"] > 0] if not accounts.empty else pd.DataFrame()
-    allocated = float(funded["allocated_capital_jpy"].sum()) if not funded.empty else 0.0
-    total_equity = float(funded["cash_jpy"].sum()) if not funded.empty else 0.0
-    if not multi["equity"].empty and not funded.empty:
-        funded_ids = set(funded["account_id"])
-        latest_equity = multi["equity"][multi["equity"]["account_id"].isin(funded_ids)]
-        latest_equity = latest_equity.sort_values("market_date").groupby("account_id").tail(1)
-        total_equity = float(latest_equity["equity_jpy"].sum())
+    allocated, total_equity, funded_count = runtime_portfolio_totals(
+        accounts,
+        multi["equity"],
+    )
     if accounts.empty:
         st.info("尚未检测到 Shadow Ledger。以下绩效来自历史研究，不代表已有运行账户或持仓。")
     metrics = st.columns(4)
     metrics[0].metric("分配资金", f"¥{allocated:,.0f}")
     metrics[1].metric("影子组合净值", f"¥{total_equity:,.0f}")
     metrics[2].metric("前向影子收益", f"{total_equity / allocated - 1:.2%}" if allocated else "—")
-    metrics[3].metric("运行机器人", f"{len(funded) if not funded.empty else 0} / 3")
+    metrics[3].metric("运行机器人", f"{funded_count} / 3")
     status_cols = st.columns(2)
     status_cols[0].metric("Kill switch", "开启")
     status_cols[1].metric("数据更新时间", date_text(data["manifest"].get("market_data_last_date")))

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import pandas as pd
 
 from moomoo_quant import config
 from moomoo_quant.multi_strategy.bootstrap import initialize_multi_strategy_ledger
@@ -14,6 +15,7 @@ from moomoo_quant.multi_strategy.models import (
     LifecycleStage, MarketPrice, RiskDecision, RiskStatus, StrategyDefinition, TargetRequest,
 )
 from moomoo_quant.multi_strategy.portfolio import aggregate_targets
+from moomoo_quant.multi_strategy.portfolio import runtime_portfolio_totals
 
 
 def test_benchmarks_are_not_strategy_accounts(tmp_path):
@@ -76,6 +78,29 @@ def test_restart_preserves_funded_strategy_runtime_status(tmp_path):
 
     restarted = initialize_multi_strategy_ledger(path, include_research_slots=True)
     assert restarted.strategy_account(config.TREND_STRATEGY_ID, "1")["status"] == "RECONCILED"
+
+
+def test_runtime_totals_include_cash_for_new_account_without_equity_snapshot():
+    accounts = pd.DataFrame(
+        [
+            {"account_id": "A", "allocated_capital_jpy": 100_000, "cash_jpy": 100_000},
+            {"account_id": "B", "allocated_capital_jpy": 100_000, "cash_jpy": 100_000},
+            {"account_id": "C", "allocated_capital_jpy": 100_000, "cash_jpy": 100_000},
+            {"account_id": "research", "allocated_capital_jpy": 0, "cash_jpy": 0},
+        ]
+    )
+    snapshots = pd.DataFrame(
+        [
+            {"account_id": "A", "market_date": "2026-08-10", "equity_jpy": 101_000},
+            {"account_id": "C", "market_date": "2026-08-10", "equity_jpy": 99_000},
+        ]
+    )
+
+    allocated, equity, funded_count = runtime_portfolio_totals(accounts, snapshots)
+
+    assert allocated == 300_000
+    assert equity == 300_000
+    assert funded_count == 3
 
 
 def test_legacy_baseline_does_not_create_fill(tmp_path):
