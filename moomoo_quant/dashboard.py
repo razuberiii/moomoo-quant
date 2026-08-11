@@ -616,6 +616,27 @@ def _account_row(multi: dict, strategy_id: str, version: str) -> dict:
     return selected.iloc[-1].to_dict() if not selected.empty else {}
 
 
+def _runtime_state(multi: dict, strategy_id: str, version: str) -> dict:
+    account = _account_row(multi, strategy_id, version)
+    if not account:
+        return {
+            "account": {},
+            "budget_jpy": 0.0,
+            "stage": "未注册",
+            "status": "Shadow Ledger 中没有运行账户",
+            "is_funded": False,
+        }
+    budget = float(account.get("allocated_capital_jpy", 0.0))
+    raw_status = account.get("status", "RESEARCH")
+    return {
+        "account": account,
+        "budget_jpy": budget,
+        "stage": "影子（SHADOW）" if budget > 0 else "研究（RESEARCH）",
+        "status": STATUS_NAMES.get(raw_status, raw_status),
+        "is_funded": budget > 0,
+    }
+
+
 def _target_text(summary: dict, symbols: tuple[str, ...]) -> str:
     latest = summary.get("latest_target", {})
     parts = [f"{symbol} {float(latest.get(f'{symbol}_weight', 0)):.0%}" for symbol in symbols]
@@ -635,11 +656,15 @@ def portfolio_overview(
     st.warning("当前为 Forward Shadow。Kill switch 开启；不连接交易账户，不发送 SIMULATE 或 REAL 订单。")
     accounts = multi["strategies"]
     funded = accounts[accounts["allocated_capital_jpy"] > 0] if not accounts.empty else pd.DataFrame()
-    allocated = float(funded["allocated_capital_jpy"].sum()) if not funded.empty else config.PORTFOLIO_CAPITAL_JPY
-    total_equity = float(funded["cash_jpy"].sum()) if not funded.empty else allocated
+    allocated = float(funded["allocated_capital_jpy"].sum()) if not funded.empty else 0.0
+    total_equity = float(funded["cash_jpy"].sum()) if not funded.empty else 0.0
     if not multi["equity"].empty and not funded.empty:
-        latest_equity = multi["equity"].sort_values("market_date").groupby("account_id").tail(1)
+        funded_ids = set(funded["account_id"])
+        latest_equity = multi["equity"][multi["equity"]["account_id"].isin(funded_ids)]
+        latest_equity = latest_equity.sort_values("market_date").groupby("account_id").tail(1)
         total_equity = float(latest_equity["equity_jpy"].sum())
+    if accounts.empty:
+        st.info("尚未检测到 Shadow Ledger。以下绩效来自历史研究，不代表已有运行账户或持仓。")
     metrics = st.columns(4)
     metrics[0].metric("分配资金", f"¥{allocated:,.0f}")
     metrics[1].metric("影子组合净值", f"¥{total_equity:,.0f}")
@@ -654,37 +679,37 @@ def portfolio_overview(
     trend_stats = data["performance"].iloc[0]
     current = data["current"].iloc[-1]
     with left.container(border=True):
+        runtime = _runtime_state(multi, config.TREND_STRATEGY_ID, "1")
         st.markdown("### Robot A · JPY 多资产趋势 v1")
-        st.write("阶段：**影子（SHADOW）**")
-        trend_account = _account_row(multi, config.TREND_STRATEGY_ID, "1")
-        st.write(f"分配资金：**¥{float(trend_account.get('allocated_capital_jpy', 100_000)):,.0f}**")
+        st.write(f"阶段：**{runtime['stage']}**")
+        st.write(f"分配资金：**¥{runtime['budget_jpy']:,.0f}**")
         st.write(f"历史年化收益率：**{float(trend_stats['cagr']):.2%}**")
         st.write(f"历史最大回撤：**{float(trend_stats['max_drawdown']):.2%}**")
-        st.write("当前目标：**SPY 50%、QQQ 50%**")
+        st.write("历史最新目标：**SPY 50%、QQQ 50%**")
         st.write(f"最近信号：**{date_text(current['signal_date'])}**")
-        st.write("状态：**等待下一次月末信号**")
+        st.write(f"状态：**{runtime['status']}**")
     with middle.container(border=True):
         summary = defensive_factor.get("summary", {})
         stats = summary.get("stats", {})
-        account = _account_row(multi, config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
+        runtime = _runtime_state(multi, config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
         st.markdown("### Robot B · 美股质量低波动 v2")
-        st.write("阶段：**影子（SHADOW）**")
-        st.write(f"分配资金：**¥{float(account.get('allocated_capital_jpy', summary.get('budget_jpy', 0))):,.0f}**")
+        st.write(f"阶段：**{runtime['stage']}**")
+        st.write(f"分配资金：**¥{runtime['budget_jpy']:,.0f}**")
         st.write(f"历史年化收益率：**{stats.get('cagr', 0):.2%}**")
         st.write(f"历史最大回撤：**{stats.get('max_drawdown', 0):.2%}**")
-        st.write(f"当前目标：**{_target_text(summary, ('QUAL', 'USMV'))}**")
-        st.write("状态：**等待下一次半年末信号**")
+        st.write(f"历史最新目标：**{_target_text(summary, ('QUAL', 'USMV'))}**")
+        st.write(f"状态：**{runtime['status']}**")
     with right.container(border=True):
         summary = risk_parity.get("summary", {})
         stats = summary.get("stats", {})
-        account = _account_row(multi, config.RISK_PARITY_STRATEGY_ID, "1")
+        runtime = _runtime_state(multi, config.RISK_PARITY_STRATEGY_ID, "1")
         st.markdown("### Robot C · JPY 无杠杆风险平价 v1")
-        st.write(f"阶段：**{'影子（SHADOW）' if summary.get('status') == 'SHADOW' else summary.get('status', 'RESEARCH')}**")
-        st.write(f"分配资金：**¥{float(account.get('allocated_capital_jpy', summary.get('budget_jpy', 0))):,.0f}**")
+        st.write(f"阶段：**{runtime['stage']}**")
+        st.write(f"分配资金：**¥{runtime['budget_jpy']:,.0f}**")
         st.write(f"历史年化收益率：**{stats.get('cagr', 0):.2%}**")
         st.write(f"历史最大回撤：**{stats.get('max_drawdown', 0):.2%}**")
-        st.write(f"当前目标：**{_target_text(summary, ('SPY', 'GLD', 'IEF'))}**")
-        st.write("状态：**等待下一次真实月末信号**")
+        st.write(f"历史最新目标：**{_target_text(summary, ('SPY', 'GLD', 'IEF'))}**")
+        st.write(f"状态：**{runtime['status']}**")
 
     st.caption("失败策略已移入历史档案；Benchmark 只在机器人详情中作为对照，不拥有预算、仓位或订单。")
 
@@ -870,6 +895,7 @@ def research_detail(title: str, research: dict, correlation_labels: tuple[str, .
 
 def robot_details(
     data: dict,
+    multi: dict,
     mr: dict,
     stress: dict,
     defensive_factor_v1: dict,
@@ -889,12 +915,15 @@ def robot_details(
         tabs = st.tabs(("运行状态", "历史回测", "前向影子", "历史档案"))
         with tabs[0]:
             summary = defensive_factor_v2.get("summary", {})
+            runtime = _runtime_state(multi, config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
             st.subheader("Robot B · 美股质量低波动 v2")
             cols = st.columns(4)
-            cols[0].metric("阶段", "SHADOW")
-            cols[1].metric("分配资金", f"¥{float(summary.get('budget_jpy', 0)):,.0f}")
-            cols[2].metric("当前目标", _target_text(summary, ("QUAL", "USMV")))
-            cols[3].metric("下次检查", "6 月或 12 月月末")
+            cols[0].metric("运行阶段", runtime["stage"])
+            cols[1].metric("分配资金", f"¥{runtime['budget_jpy']:,.0f}")
+            cols[2].metric("历史最新目标", _target_text(summary, ("QUAL", "USMV")))
+            cols[3].metric("下次检查", "6 月或 12 月月末" if runtime["is_funded"] else "无（研究拒绝）")
+            st.write(f"运行状态：**{runtime['status']}**")
+            st.write(f"研究结论：**{summary.get('status', '尚无研究结果')}**")
             st.caption("质量 + 低波动因子，固定 50% / 50%，半年调仓；不使用趋势、动量或均值回归。")
         with tabs[1]:
             research_detail(
@@ -903,7 +932,10 @@ def robot_details(
                 ("monthly_correlation_with_trend_v1", "monthly_correlation_with_risk_parity_v1"),
             )
         with tabs[2]:
-            st.info("2026-06-30 只作为初始基线，不追溯成交；等待 2026-12 的真实半年末信号。")
+            if runtime["is_funded"]:
+                st.info("2026-06-30 只作为初始基线，不追溯成交；等待下一次真实半年末信号。")
+            else:
+                st.info("当前研究门槛未通过，没有运行预算、影子持仓或待执行信号。")
         with tabs[3]:
             archived = []
             for name, item in (
@@ -970,10 +1002,13 @@ def robot_comparison(data: dict, defensive_factor: dict, risk_parity: dict, mult
     parity_summary = risk_parity.get("summary", {})
     factor_stats = factor_summary.get("stats", {})
     parity_stats = parity_summary.get("stats", {})
+    trend_runtime = _runtime_state(multi, config.TREND_STRATEGY_ID, "1")
+    factor_runtime = _runtime_state(multi, config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
+    parity_runtime = _runtime_state(multi, config.RISK_PARITY_STRATEGY_ID, "1")
     rows = [
-        {"策略": "Robot A · 趋势", "版本": "1", "生命周期": "SHADOW", "预算": "¥100,000", "年化收益率": pct(trend["cagr"]), "最大回撤": pct(trend["max_drawdown"]), "夏普比率": f"{trend['sharpe']:.3f}", "净收益": pct(trend["total_return"]), "换手率": "—", "成本（日元）": "—", "当前仓位": "SPY 50%、QQQ 50%", "下一检查": "下一个美股月末", "拒绝原因": ""},
-        {"策略": "Robot B · 质量低波动", "版本": "2", "生命周期": factor_summary.get("status", "SHADOW"), "预算": f"¥{float(factor_summary.get('budget_jpy', 0)):,.0f}", "年化收益率": pct(factor_stats.get("cagr")), "最大回撤": pct(factor_stats.get("max_drawdown")), "夏普比率": f"{factor_stats.get('sharpe', 0):.3f}", "净收益": pct(factor_stats.get("net_return")), "换手率": f"{factor_stats.get('annualized_turnover', 0):.2f}x/年", "成本（日元）": f"¥{factor_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": _target_text(factor_summary, ("QUAL", "USMV")), "下一检查": "下一个半年末", "拒绝原因": ""},
-        {"策略": "Robot C · 风险平价", "版本": "1", "生命周期": parity_summary.get("status", "RESEARCH"), "预算": f"¥{float(parity_summary.get('budget_jpy', 0)):,.0f}", "年化收益率": pct(parity_stats.get("cagr")), "最大回撤": pct(parity_stats.get("max_drawdown")), "夏普比率": f"{parity_stats.get('sharpe', 0):.3f}", "净收益": pct(parity_stats.get("net_return")), "换手率": f"{parity_stats.get('turnover', 0):.2f}x", "成本（日元）": f"¥{parity_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": _target_text(parity_summary, ("SPY", "GLD", "IEF")), "下一检查": "下一个美股月末", "拒绝原因": "、".join(parity_summary.get("rejection_reasons", []))},
+        {"策略": "Robot A · 趋势", "版本": "1", "生命周期": trend_runtime["stage"], "预算": f"¥{trend_runtime['budget_jpy']:,.0f}", "年化收益率": pct(trend["cagr"]), "最大回撤": pct(trend["max_drawdown"]), "夏普比率": f"{trend['sharpe']:.3f}", "净收益": pct(trend["total_return"]), "换手率": "—", "成本（日元）": "—", "当前仓位": "SPY 50%、QQQ 50%", "下一检查": "下一个美股月末", "拒绝原因": ""},
+        {"策略": "Robot B · 质量低波动", "版本": "2", "生命周期": factor_runtime["stage"], "预算": f"¥{factor_runtime['budget_jpy']:,.0f}", "年化收益率": pct(factor_stats.get("cagr")), "最大回撤": pct(factor_stats.get("max_drawdown")), "夏普比率": f"{factor_stats.get('sharpe', 0):.3f}", "净收益": pct(factor_stats.get("net_return")), "换手率": f"{factor_stats.get('annualized_turnover', 0):.2f}x/年", "成本（日元）": f"¥{factor_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": _target_text(factor_summary, ("QUAL", "USMV")), "下一检查": "下一个半年末" if factor_runtime["is_funded"] else "无（研究拒绝）", "拒绝原因": "、".join(factor_summary.get("rejection_reasons", []))},
+        {"策略": "Robot C · 风险平价", "版本": "1", "生命周期": parity_runtime["stage"], "预算": f"¥{parity_runtime['budget_jpy']:,.0f}", "年化收益率": pct(parity_stats.get("cagr")), "最大回撤": pct(parity_stats.get("max_drawdown")), "夏普比率": f"{parity_stats.get('sharpe', 0):.3f}", "净收益": pct(parity_stats.get("net_return")), "换手率": f"{parity_stats.get('turnover', 0):.2f}x", "成本（日元）": f"¥{parity_stats.get('total_cost_jpy', 0):,.0f}", "当前仓位": _target_text(parity_summary, ("SPY", "GLD", "IEF")), "下一检查": "下一个美股月末", "拒绝原因": "、".join(parity_summary.get("rejection_reasons", []))},
     ]
     comparison = pd.DataFrame(rows)
     st.dataframe(
@@ -1058,6 +1093,7 @@ if page == "运行总览":
 elif page == "机器人详情":
     robot_details(
         dashboard_data,
+        multi_strategy_data,
         mean_reversion_data,
         stress_pullback_data,
         defensive_factor_v1_data,

@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .. import config
+from ..market_calendar import completed_month_ends
 from ..strategies.jpy_multi_asset_trend import prepare_jpy_daily
 from ..trend_data import load_cached_trend_history
 from .research_common import (
@@ -47,10 +48,7 @@ def risk_parity_signals(daily: dict[str, pd.DataFrame], params: dict) -> pd.Data
     common_index = next(iter(daily.values())).index
     prices = pd.DataFrame({symbol: daily[symbol]["jpy_close"] for symbol in assets}, index=common_index)
     log_returns = np.log(prices / prices.shift(1))
-    month_ends = prices.groupby(prices.index.to_period("M")).tail(1).index
-    current_period = pd.Timestamp.today().to_period("M")
-    if len(month_ends) and month_ends[-1].to_period("M") == current_period:
-        month_ends = month_ends[:-1]
+    month_ends = completed_month_ends(prices.index)
     previous = pd.Series(0.0, index=assets)
     rows: list[dict] = []
     for dt in month_ends:

@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterable
 from datetime import date, timedelta
 
 import pandas as pd
@@ -81,19 +82,29 @@ def load_cached_trend_history() -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
     return assets, pd.read_csv(fx_path)
 
 
-def load_defensive_factor_history() -> dict[str, pd.DataFrame]:
+def _factor_codes(asset_universe: Iterable[str] | None) -> list[str]:
+    if asset_universe is None:
+        return list(config.DEFENSIVE_FACTOR_SYMBOLS)
+    return [symbol if "." in symbol else f"US.{symbol}" for symbol in asset_universe]
+
+
+def load_defensive_factor_history(
+    asset_universe: Iterable[str] | None = None,
+) -> dict[str, pd.DataFrame]:
     """Update the factor ETF caches through the quote-only OpenD path."""
     return {
         code.split(".")[-1]: load_or_update_daily(code, earliest_start="2013-01-01")
-        for code in config.DEFENSIVE_FACTOR_SYMBOLS
+        for code in _factor_codes(asset_universe)
     }
 
 
-def load_cached_defensive_factor_history() -> dict[str, pd.DataFrame]:
+def load_cached_defensive_factor_history(
+    asset_universe: Iterable[str] | None = None,
+) -> dict[str, pd.DataFrame]:
     """Load factor ETF history without opening OpenD or making a network call."""
     assets: dict[str, pd.DataFrame] = {}
     missing: list[str] = []
-    for code in config.DEFENSIVE_FACTOR_SYMBOLS:
+    for code in _factor_codes(asset_universe):
         symbol = code.split(".")[-1]
         path = config.DATA_DIR / f"{symbol}_daily.csv"
         if path.exists():

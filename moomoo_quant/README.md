@@ -135,15 +135,15 @@ python -m moomoo_quant.main multi-strategy-init
 python -m pytest -q
 ```
 
-运行层由三个逻辑不同的机器人组成：
+运行层只聚合获得预算的机器人；研究拒绝策略继续占用研究槽位，但不贡献持仓：
 
 - Robot A — `JPY Multi-Asset Trend v1`：JPY 计价的时间序列趋势，月频，预算 ¥100,000。v1 参数保持冻结。
-- Robot B — `US Quality & Low Volatility v2`：QUAL / USMV 各 50% 的长期股票因子配置，半年再平衡，预算 ¥100,000。
+- Robot B — `US Quality & Low Volatility v2`：QUAL / USMV 各 50% 的长期股票因子配置，半年再平衡，当前预算 ¥0。
 - Robot C — `JPY Unlevered Risk Parity v1`：SPY / GLD / IEF 的 JPY 逆波动配置，月频，预算 ¥100,000。v1 参数保持冻结。
 
-Robot B 不使用 A 的 momentum / SMA 信号，也不使用 C 的逆波动动态权重。它只在 6 月和 12 月完整月末生成固定 50% / 50% 目标，并在下一共同交易日开盘进行本地虚拟记账。首次冻结结果为：CAGR 15.07%、最大回撤 -33.84%、Sharpe 0.903、2021 年以后 OOS Sharpe 1.202、年化换手 0.080、总成本约 ¥773；全部预注册门槛通过后进入 `SHADOW`。2026-06-30 基准不追溯执行，等待下一个真实半年末。
+Robot B 不使用 A 的 momentum / SMA 信号，也不使用 C 的逆波动动态权重。不可变首跑档案曾记录为通过；修复完整月末和资产缓存隔离后，使用当前 OpenD 可重新获取的数据从 2013-10-30 重跑，最大回撤比同期 SPY JPY 差约 0.015 个百分点，因此预注册回撤门槛未通过。参数没有修改，当前状态为 `RESEARCH_REJECTED`，预算为 ¥0，也不会加载 Factor 行情进入生产 Runner。
 
-三个机器人由独立虚拟账户记录资金、持仓、信号、成交和净值。Portfolio Manager 只按策略预算聚合相同资产的净目标，Ledger 保留每一份持仓的策略归属，因此一个机器人退出不会卖掉另一个机器人拥有的份额。
+获得预算的机器人由独立虚拟账户记录资金、持仓、信号、成交和净值。Portfolio Manager 只按策略预算聚合相同资产的净目标，Ledger 保留每一份持仓的策略归属，因此一个机器人退出不会卖掉另一个机器人拥有的份额。
 
 ## 被拒绝的研究档案
 
@@ -152,6 +152,7 @@ Robot B 不使用 A 的 momentum / SMA 信号，也不使用 C 的逆波动动�
 - `Mean Reversion v1`：Gross 为正但成本后期望为负。
 - `Stress Pullback Mean Reversion v2`：仅 8 笔，样本与年度分散门槛失败。
 - `US Defensive Multi-Factor v1`：QUAL / VLUE / USMV 版本只未通过相对 SPY JPY 的最大回撤门槛。
+- `US Quality & Low Volatility v2`：当前可复现数据下只未通过相对 SPY JPY 的最大回撤门槛；不可变首跑档案仍保留。
 
 所有失败结果和预注册规格永久保留，但不会占用运行总览的机器人位置。
 

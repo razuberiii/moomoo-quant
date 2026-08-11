@@ -134,25 +134,27 @@ def build_signal_candidates(daily: dict[str, pd.DataFrame]) -> list[ShadowSignal
                 "Frozen JPY Risk Parity v1 month-end signal; next-session virtual open only.",
             )
         )
-    factor_daily = {symbol: daily[symbol] for symbol in config.DEFENSIVE_FACTOR_V2["asset_universe"]}
-    factor = defensive_factor_signals(factor_daily, config.DEFENSIVE_FACTOR_V2)
-    for _, row in factor.iterrows():
-        signal_date = pd.Timestamp(row["signal_date"]).date().isoformat()
-        weights = {symbol: float(row[f"{symbol}_weight"]) for symbol in factor_daily}
-        candidates.append(
-            ShadowSignalCandidate(
-                config.DEFENSIVE_FACTOR_STRATEGY_ID,
-                "2",
-                signal_date,
-                weights,
-                {
-                    "config_hash": config.DEFENSIVE_FACTOR_V2_HASH,
-                    "weights": weights,
-                    "signal_date": signal_date,
-                },
-                "Frozen Quality & Low Volatility v2 half-year signal; next-session virtual open only.",
+    factor_symbols = config.DEFENSIVE_FACTOR_V2["asset_universe"]
+    if all(symbol in daily for symbol in factor_symbols):
+        factor_daily = {symbol: daily[symbol] for symbol in factor_symbols}
+        factor = defensive_factor_signals(factor_daily, config.DEFENSIVE_FACTOR_V2)
+        for _, row in factor.iterrows():
+            signal_date = pd.Timestamp(row["signal_date"]).date().isoformat()
+            weights = {symbol: float(row[f"{symbol}_weight"]) for symbol in factor_daily}
+            candidates.append(
+                ShadowSignalCandidate(
+                    config.DEFENSIVE_FACTOR_STRATEGY_ID,
+                    "2",
+                    signal_date,
+                    weights,
+                    {
+                        "config_hash": config.DEFENSIVE_FACTOR_V2_HASH,
+                        "weights": weights,
+                        "signal_date": signal_date,
+                    },
+                    "Frozen Quality & Low Volatility v2 half-year signal; next-session virtual open only.",
+                )
             )
-        )
     return candidates
 
 
@@ -162,6 +164,14 @@ def _portfolio_limit(ledger: ShadowLedger) -> float:
             "SELECT COALESCE(SUM(allocated_capital_jpy), 0) FROM strategy_accounts WHERE allocated_capital_jpy > 0"
         ).fetchone()[0]
     return float(value)
+
+
+def _funded_strategy_ids(ledger: ShadowLedger) -> set[str]:
+    with ledger.connect() as conn:
+        rows = conn.execute(
+            "SELECT strategy_id FROM strategy_accounts WHERE allocated_capital_jpy > 0"
+        ).fetchall()
+    return {row["strategy_id"] for row in rows}
 
 
 def _shadow_risk(
@@ -338,10 +348,15 @@ def run_production_once(now: datetime | None = None) -> dict:
             logger.info("Shadow Runner started; broker execution remains disabled")
             # Update caches without republishing the frozen formal backtest run.
             # Forward accounting and immutable historical evidence are separate.
-            assets, fx = load_trend_history()
-            factor_assets = load_defensive_factor_history()
-            daily = prepare_jpy_daily({**assets, **factor_assets}, fx)
             ledger = initialize_multi_strategy_ledger(include_research_slots=True)
+            funded_strategies = _funded_strategy_ids(ledger)
+            assets, fx = load_trend_history()
+            factor_assets = {}
+            if config.DEFENSIVE_FACTOR_STRATEGY_ID in funded_strategies:
+                factor_assets = load_defensive_factor_history(
+                    config.DEFENSIVE_FACTOR_V2["asset_universe"]
+                )
+            daily = prepare_jpy_daily({**assets, **factor_assets}, fx)
             result = run_shadow_cycle(ledger, daily, build_signal_candidates(daily), now)
             logger.info("Shadow Runner result: %s", json.dumps(result, sort_keys=True))
             return result

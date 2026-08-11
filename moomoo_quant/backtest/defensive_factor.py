@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .. import config
+from ..market_calendar import completed_month_ends
 from ..strategies.jpy_multi_asset_trend import prepare_jpy_daily
 from ..trend_data import (
     load_cached_defensive_factor_history,
@@ -30,10 +31,9 @@ def defensive_factor_signals(daily: dict[str, pd.DataFrame], params: dict) -> pd
     for symbol in assets:
         common = common.intersection(daily[symbol].index)
     months = (6, 12) if params["rebalance_frequency"] == "calendar_half_year_end" else (3, 6, 9, 12)
-    completed = common[common.month.isin(months)]
-    quarter_ends = pd.Series(completed, index=completed).groupby(completed.to_period("Q")).last()
+    signal_dates = completed_month_ends(common, months)
     rows: list[dict] = []
-    for signal_date in pd.DatetimeIndex(quarter_ends.to_numpy()):
+    for signal_date in signal_dates:
         row = {
             "signal_date": signal_date,
             "selected": ",".join(assets),
@@ -100,7 +100,7 @@ def _formal_result(daily: dict[str, pd.DataFrame], params: dict) -> dict:
 def _run_defensive_factor_version(params: dict, prefix: str, strategy_name: str) -> dict:
     params = json.loads(json.dumps(params))
     trend_assets, fx = load_cached_trend_history()
-    factor_assets = load_cached_defensive_factor_history()
+    factor_assets = load_cached_defensive_factor_history(params["asset_universe"])
     assets = {
         **factor_assets,
         "SPY": trend_assets["SPY"],
