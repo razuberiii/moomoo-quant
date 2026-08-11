@@ -195,8 +195,7 @@ class ShadowLedger:
                     idempotency_key TEXT NOT NULL, strategy_id TEXT NOT NULL,
                     symbol TEXT NOT NULL, side TEXT NOT NULL, quantity REAL NOT NULL,
                     status TEXT NOT NULL, order_id TEXT, details_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE (idempotency_key, status)
+                    created_at TEXT NOT NULL
                 );
                 """
             )
@@ -212,6 +211,40 @@ class ShadowLedger:
                 )
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, ?)",
+                (now,),
+            )
+            broker_indexes = conn.execute("PRAGMA index_list(broker_order_records)").fetchall()
+            has_status_unique_constraint = False
+            for index in broker_indexes:
+                if not index["unique"]:
+                    continue
+                columns = tuple(
+                    row["name"]
+                    for row in conn.execute(f"PRAGMA index_info('{index['name']}')").fetchall()
+                )
+                if columns == ("idempotency_key", "status"):
+                    has_status_unique_constraint = True
+                    break
+            if has_status_unique_constraint:
+                conn.execute("DROP TRIGGER IF EXISTS broker_order_records_no_update")
+                conn.execute("DROP TRIGGER IF EXISTS broker_order_records_no_delete")
+                conn.executescript(
+                    """
+                    CREATE TABLE broker_order_records_v3 (
+                        record_id TEXT PRIMARY KEY, rebalance_id TEXT NOT NULL,
+                        idempotency_key TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                        symbol TEXT NOT NULL, side TEXT NOT NULL, quantity REAL NOT NULL,
+                        status TEXT NOT NULL, order_id TEXT, details_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
+                    INSERT INTO broker_order_records_v3
+                    SELECT * FROM broker_order_records;
+                    DROP TABLE broker_order_records;
+                    ALTER TABLE broker_order_records_v3 RENAME TO broker_order_records;
+                    """
+                )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, ?)",
                 (now,),
             )
             for table in APPEND_ONLY_TABLES:
@@ -838,14 +871,18 @@ class ShadowLedger:
         order_id: str | None,
         details: dict,
     ) -> bool:
-        record_id = f"broker-order:{idempotency_key}:{status}"
+        details_json = json.dumps(details, sort_keys=True, default=str)
+        event_fingerprint = hashlib.sha256(
+            f"{status}|{order_id or ''}|{details_json}".encode("utf-8")
+        ).hexdigest()[:16]
+        record_id = f"broker-order:{idempotency_key}:{status}:{event_fingerprint}"
         with self.connect() as conn:
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO broker_order_records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record_id, rebalance_id, idempotency_key, strategy_id, symbol,
                     side, quantity, status, order_id,
-                    json.dumps(details, sort_keys=True, default=str),
+                    details_json,
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )

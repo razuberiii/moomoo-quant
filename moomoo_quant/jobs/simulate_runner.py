@@ -138,18 +138,82 @@ def _market_is_open(now: datetime | None = None) -> bool:
 
 
 def _activity_is_owned(preflight, ledger) -> bool:
-    records = ledger.rows("broker_order_records")
-    if not preflight.positions and not preflight.open_orders:
-        return True
+    records = _latest_broker_records(ledger)
     if not records:
+        return not preflight.positions and not preflight.open_orders
+
+    expected_positions: dict[str, float] = {}
+    known_orders: dict[str, dict] = {}
+    try:
+        for row in records:
+            order_id = row.get("order_id")
+            if order_id:
+                known_orders[str(order_id)] = {
+                    "symbol": str(row.get("symbol") or ""),
+                    "side": str(row.get("side") or "").upper(),
+                    "quantity": float(row.get("quantity", 0.0) or 0.0),
+                    "remark": f"mq:{str(row['idempotency_key'])[:20]}",
+                }
+            details = json.loads(row.get("details_json") or "{}")
+            dealt_quantity = float(details.get("dealt_qty", 0.0) or 0.0)
+            if not math.isfinite(dealt_quantity) or dealt_quantity < 0:
+                return False
+            side = str(row.get("side") or "").upper()
+            if side not in {"BUY", "SELL"}:
+                return False
+            signed_quantity = dealt_quantity if side == "BUY" else -dealt_quantity
+            symbol = str(row.get("symbol") or "")
+            expected_positions[symbol] = expected_positions.get(symbol, 0.0) + signed_quantity
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return False
-    positions_ok = all(row.get("code") in config.MOOMOO_SIMULATE_ALLOWED_SYMBOLS for row in preflight.positions)
-    orders_ok = all(
-        row.get("code") in config.MOOMOO_SIMULATE_ALLOWED_SYMBOLS
-        and str(row.get("remark") or "").startswith("mq:")
-        for row in preflight.open_orders
+
+    tolerance = max(config.OPERATIONAL_QUANTITY_STEP / 2, 1e-8)
+    for order in preflight.open_orders:
+        expected = known_orders.get(str(order.get("order_id")))
+        try:
+            quantity = float(order.get("qty", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return False
+        side = str(order.get("trd_side") or "").upper().rsplit(".", 1)[-1]
+        if expected is None or (
+            order.get("code") not in config.MOOMOO_SIMULATE_ALLOWED_SYMBOLS
+            or str(order.get("code")) != expected["symbol"]
+            or side != expected["side"]
+            or abs(quantity - expected["quantity"]) > tolerance
+            or str(order.get("remark") or "") != expected["remark"]
+        ):
+            return False
+
+    actual_positions: dict[str, float] = {}
+    for position in preflight.positions:
+        symbol = str(position.get("code") or "")
+        side = str(position.get("position_side") or "").upper().rsplit(".", 1)[-1]
+        try:
+            quantity = float(position.get("qty", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return False
+        if (
+            symbol not in config.MOOMOO_SIMULATE_ALLOWED_SYMBOLS
+            or side != "LONG"
+            or not math.isfinite(quantity)
+            or quantity <= 0
+        ):
+            return False
+        actual_positions[symbol] = actual_positions.get(symbol, 0.0) + quantity
+
+    expected_positions = {
+        symbol: quantity
+        for symbol, quantity in expected_positions.items()
+        if abs(quantity) > tolerance
+    }
+    if any(quantity < 0 for quantity in expected_positions.values()):
+        return False
+    if set(actual_positions) != set(expected_positions):
+        return False
+    return all(
+        abs(actual_positions[symbol] - expected_positions[symbol]) <= tolerance
+        for symbol in actual_positions
     )
-    return positions_ok and orders_ok
 
 
 def _latest_broker_records(ledger) -> list[dict]:
@@ -182,6 +246,7 @@ def run_sync(gateway: OpenDSimulateGateway | None = None) -> dict:
         ledger,
         gateway,
         enabled=True,
+        kill_switch=config.MOOMOO_SIMULATE_KILL_SWITCH,
         strategy_allowlist=frozenset({PORTFOLIO_ORDER_OWNER}),
     )
     synced = []
@@ -308,6 +373,7 @@ def run_bootstrap(
         ledger,
         gateway,
         enabled=True,
+        kill_switch=config.MOOMOO_SIMULATE_KILL_SWITCH,
         strategy_allowlist=frozenset({PORTFOLIO_ORDER_OWNER}),
     )
     submissions = []

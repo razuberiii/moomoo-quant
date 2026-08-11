@@ -52,7 +52,8 @@ class MoomooSimulateExecutionAdapter:
         ledger: ShadowLedger,
         gateway: SimulateGateway,
         *,
-        enabled: bool = config.MOOMOO_SIMULATE_ENABLED,
+        enabled: bool | None = None,
+        kill_switch: bool | None = None,
         requested_environment: object = SIMULATE_ENVIRONMENT,
         symbol_allowlist: frozenset[str] = config.MOOMOO_SIMULATE_ALLOWED_SYMBOLS,
         strategy_allowlist: frozenset[str] = frozenset(),
@@ -62,7 +63,8 @@ class MoomooSimulateExecutionAdapter:
             raise SimulateSafetyError("Only the fixed SIMULATE environment is accepted")
         self.ledger = ledger
         self.gateway = gateway
-        self.enabled = enabled
+        self.enabled = config.MOOMOO_SIMULATE_ENABLED if enabled is None else enabled
+        self.kill_switch = config.MOOMOO_SIMULATE_KILL_SWITCH if kill_switch is None else kill_switch
         self.symbol_allowlist = symbol_allowlist
         self.strategy_allowlist = strategy_allowlist
         self.maximum_quantity = maximum_quantity
@@ -78,6 +80,10 @@ class MoomooSimulateExecutionAdapter:
         if not self.enabled:
             raise SimulateExecutionDisabled(
                 "MOOMOO_SIMULATE_ENABLED=false; separate user approval is required"
+            )
+        if self.kill_switch:
+            raise SimulateExecutionDisabled(
+                "MOOMOO_SIMULATE_KILL_SWITCH=true; paper submission is disabled"
             )
         if risk.scope is not RiskScope.SIMULATE_SCOPE or risk.status is not RiskStatus.APPROVED_FOR_SIMULATE:
             raise SimulateSafetyError("Portfolio and SIMULATE_SCOPE risk approval are required")

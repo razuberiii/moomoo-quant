@@ -5,7 +5,13 @@ import pandas as pd
 import pytest
 
 from moomoo_quant import config
-from moomoo_quant.jobs.simulate_runner import _reserve_modeled_execution_costs, run_bootstrap, run_preflight
+from moomoo_quant.jobs.simulate_runner import (
+    _activity_is_owned,
+    _reserve_modeled_execution_costs,
+    run_bootstrap,
+    run_preflight,
+)
+from moomoo_quant.multi_strategy.ledger import ShadowLedger
 from moomoo_quant.multi_strategy.models import MarketPrice, TargetRequest
 from moomoo_quant.trading.moomoo_simulate_adapter import SimulateSafetyError
 from moomoo_quant.trading.moomoo_simulate_gateway import (
@@ -20,6 +26,7 @@ SDK = {
     "RET_OK": 0,
     "TrdEnv": SimpleNamespace(SIMULATE="SIMULATE"),
     "TrdMarket": SimpleNamespace(US="US"),
+    "Currency": SimpleNamespace(USD="USD"),
     "SimAccType": SimpleNamespace(STOCK="STOCK", STOCK_AND_OPTION="STOCK_AND_OPTION"),
 }
 
@@ -66,6 +73,65 @@ def test_configured_account_resolves_an_ambiguous_paper_account_list():
 
 
 @pytest.mark.parametrize(
+    ("enabled", "kill_switch", "message"),
+    [(False, False, "ENABLED=false"), (True, True, "KILL_SWITCH=true")],
+)
+def test_gateway_submission_gates_fail_before_opening_a_context(
+    enabled, kill_switch, message, monkeypatch
+):
+    gateway = OpenDSimulateGateway(enabled=enabled, kill_switch=kill_switch)
+    touched = False
+
+    def context_must_not_open():
+        nonlocal touched
+        touched = True
+        raise AssertionError("OpenD context should not be opened")
+
+    monkeypatch.setattr(gateway, "_context", context_must_not_open)
+    with pytest.raises(SimulateSafetyError, match=message):
+        gateway.submit_simulated_order(
+            symbol="US.SPY",
+            side="BUY",
+            quantity=1.0,
+            trading_environment="SIMULATE",
+            idempotency_key="gate-test",
+        )
+    assert not touched
+
+
+class PositionContext:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def position_list_query(self, **kwargs):
+        return 0, pd.DataFrame(self.rows)
+
+
+def test_gateway_sell_rejects_short_or_insufficient_long_inventory():
+    account_record = SimulateAccount(123, "sim-safe", "STOCK", "ACTIVE")
+    with pytest.raises(SimulateSafetyError, match="No sellable LONG"):
+        OpenDSimulateGateway._require_sellable_long_position(
+            PositionContext(
+                [{"code": "US.SPY", "position_side": "SHORT", "can_sell_qty": 10.0}]
+            ),
+            SDK,
+            account_record,
+            "US.SPY",
+            1.0,
+        )
+    with pytest.raises(SimulateSafetyError, match="exceed"):
+        OpenDSimulateGateway._require_sellable_long_position(
+            PositionContext(
+                [{"code": "US.SPY", "position_side": "LONG", "can_sell_qty": 0.5}]
+            ),
+            SDK,
+            account_record,
+            "US.SPY",
+            1.0,
+        )
+
+
+@pytest.mark.parametrize(
     ("broker", "internal"),
     [
         ("SUBMITTED", "SUBMITTED"),
@@ -103,6 +169,70 @@ class PreflightGateway:
     def preflight(self):
         self.calls += 1
         return self.value
+
+
+def _record_broker_event(ledger, *, status="FILLED", dealt_qty=1.0):
+    ledger.record_broker_order_event(
+        "rebalance-1",
+        "owned-position-key",
+        "PORTFOLIO_MANAGER",
+        "US.SPY",
+        "BUY",
+        1.0,
+        status,
+        "order-1",
+        {"dealt_qty": dealt_qty},
+    )
+
+
+def test_allowlisted_foreign_position_is_not_treated_as_project_owned(tmp_path):
+    ledger = ShadowLedger(tmp_path / "ledger.db")
+    ledger.migrate()
+    _record_broker_event(ledger, dealt_qty=0.5)
+    preflight = PreflightGateway(
+        positions=({"code": "US.SPY", "qty": 1.0, "position_side": "LONG"},)
+    ).value
+    assert not _activity_is_owned(preflight, ledger)
+
+
+def test_position_must_match_recorded_filled_quantity(tmp_path):
+    ledger = ShadowLedger(tmp_path / "ledger.db")
+    ledger.migrate()
+    _record_broker_event(ledger)
+    preflight = PreflightGateway(
+        positions=({"code": "US.SPY", "qty": 1.0, "position_side": "LONG"},)
+    ).value
+    assert _activity_is_owned(preflight, ledger)
+
+
+def test_open_order_requires_exact_recorded_id_and_remark(tmp_path):
+    ledger = ShadowLedger(tmp_path / "ledger.db")
+    ledger.migrate()
+    _record_broker_event(ledger, status="SUBMITTED", dealt_qty=0.0)
+    foreign = PreflightGateway(
+        orders=(
+            {
+                "code": "US.SPY",
+                "order_id": "foreign-order",
+                "remark": "mq:someone-elses-key",
+                "trd_side": "BUY",
+                "qty": 1.0,
+            },
+        )
+    ).value
+    owned = PreflightGateway(
+        orders=(
+            {
+                "code": "US.SPY",
+                "order_id": "order-1",
+                "remark": "mq:owned-position-key",
+                "trd_side": "BUY",
+                "qty": 1.0,
+            },
+        )
+    ).value
+    assert not _activity_is_owned(foreign, ledger)
+    assert _activity_is_owned(owned, ledger)
 
 
 def test_preflight_is_read_only_and_sanitized(tmp_path, monkeypatch):

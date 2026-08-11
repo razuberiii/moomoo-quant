@@ -170,7 +170,7 @@ python -m moomoo_quant.jobs.shadow_runner --run-once
 
 Forward Shadow 与 Moomoo SIMULATE 必须并行保留：Shadow 是确定性的预期账本，记录每个机器人的资金归属、理论成交、佣金/滑点/换汇后的 JPY 净值；SIMULATE 是合并后的券商层执行验证，用来发现账户筛选、碎股、拒单、重复单、成交状态和持仓偏差。三个机器人不会各自下单，Portfolio Manager 只为每个 ETF 发送一张合并净订单。
 
-SIMULATE 默认仍关闭，且拥有独立 Kill switch。第一次只运行只读预检：
+SIMULATE 默认仍关闭，且拥有独立 Kill switch。当前未获得发送模拟订单的执行批准；除非用户未来另行明确批准，不得运行 `--bootstrap`。第一次只运行只读预检：
 
 ```bash
 MOOMOO_SIMULATE_ENABLED=true \
@@ -179,7 +179,7 @@ python -m moomoo_quant.jobs.simulate_runner --preflight
 
 预检必须选中唯一的 active US stock paper account；如果有多个账户，应配置 `MOOMOO_SIMULATE_ACC_ID`。输出和账本只保存不可逆账户指纹，不保存真实账户列表。若模拟账户已有不属于本项目的持仓或订单，bootstrap 会 fail closed。
 
-只有在 XNYS 常规交易时段、行情与 USDJPY 新鲜、预检通过，并同时解除独立模拟 Kill switch 和提供确认口令时才会发送当前 A/B/C 合并建仓单：
+以下 bootstrap 命令仅记录未来获得单独批准后的操作方式。只有在 XNYS 常规交易时段、行情与 USDJPY 新鲜、预检通过，并同时解除独立模拟 Kill switch 和提供确认口令时才会发送当前 A/B/C 合并建仓单：
 
 ```bash
 MOOMOO_SIMULATE_ENABLED=true \

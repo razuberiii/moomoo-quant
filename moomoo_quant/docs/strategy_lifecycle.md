@@ -2,9 +2,10 @@
 
 Stable stages are `RESEARCH`, `BACKTEST`, `SHADOW`, `SIMULATE`, and `LIVE`.
 Transitions are explicit, sequential, approved events; no job can auto-promote a
-strategy. This release keeps strategy lifecycle at `SHADOW` while a parallel,
-portfolio-level SIMULATE execution-validation ledger runs. `LIVE` always raises
-`PermissionError`; no successful paper order can promote any strategy to LIVE.
+strategy. This release keeps strategy lifecycle at `SHADOW`; a parallel,
+portfolio-level SIMULATE execution-validation ledger is implemented but remains
+disabled and unapproved for order submission. `LIVE` always raises
+`PermissionError`; no paper-order result can promote any strategy to LIVE.
 
 - JPY Multi-Asset Trend v1: `SHADOW`
 - US ETF Short-Term Mean Reversion v1: `RESEARCH_REJECTED`, frozen first result

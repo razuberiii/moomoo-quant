@@ -1,4 +1,5 @@
 import ast
+import sqlite3
 from datetime import datetime, timezone
 
 import pytest
@@ -55,16 +56,99 @@ def test_default_disabled_never_calls_gateway(tmp_path):
     assert gateway.calls == []
 
 
+def test_kill_switch_never_calls_gateway(tmp_path):
+    ledger = ShadowLedger(tmp_path / "db")
+    ledger.migrate()
+    gateway = FakeGateway()
+    adapter = MoomooSimulateExecutionAdapter(
+        ledger,
+        gateway,
+        enabled=True,
+        kill_switch=True,
+        strategy_allowlist=frozenset({"A"}),
+    )
+    with pytest.raises(SimulateExecutionDisabled, match="KILL_SWITCH=true"):
+        adapter.submit(order(), approved(), rebalance_id="rebalance-1", strategy_id="A")
+    assert gateway.calls == []
+
+
 def test_mock_submission_is_idempotent_and_passes_simulate_explicitly(tmp_path):
     ledger = ShadowLedger(tmp_path / "db")
     ledger.migrate()
     gateway = FakeGateway()
-    adapter = MoomooSimulateExecutionAdapter(ledger, gateway, enabled=True, strategy_allowlist=frozenset({"A"}))
+    adapter = MoomooSimulateExecutionAdapter(
+        ledger,
+        gateway,
+        enabled=True,
+        kill_switch=False,
+        strategy_allowlist=frozenset({"A"}),
+    )
     first = adapter.submit(order(), approved(), rebalance_id="rebalance-1", strategy_id="A")
     second = adapter.submit(order(), approved(), rebalance_id="rebalance-1", strategy_id="A")
     assert first.order_id == second.order_id == "fake-1"
     assert len(gateway.calls) == 1
     assert gateway.calls[0]["trading_environment"] == SIMULATE_ENVIRONMENT
+
+
+def test_broker_ledger_preserves_partial_fill_progress_and_deduplicates_replays(tmp_path):
+    ledger = ShadowLedger(tmp_path / "db")
+    ledger.migrate()
+    common = ("rebalance-1", "key1", "A", "US.SPY", "BUY", 1.0, "PARTIALLY_FILLED", "order-1")
+    assert ledger.record_broker_order_event(*common, {"dealt_qty": 0.25})
+    assert ledger.record_broker_order_event(*common, {"dealt_qty": 0.5})
+    assert not ledger.record_broker_order_event(*common, {"dealt_qty": 0.5})
+    rows = ledger.rows("broker_order_records")
+    assert len(rows) == 2
+    assert {row["details_json"] for row in rows} == {
+        '{"dealt_qty": 0.25}',
+        '{"dealt_qty": 0.5}',
+    }
+
+
+def test_broker_ledger_migrates_the_old_status_unique_constraint(tmp_path):
+    path = tmp_path / "db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE broker_order_records (
+                record_id TEXT PRIMARY KEY, rebalance_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL, strategy_id TEXT NOT NULL,
+                symbol TEXT NOT NULL, side TEXT NOT NULL, quantity REAL NOT NULL,
+                status TEXT NOT NULL, order_id TEXT, details_json TEXT NOT NULL,
+                created_at TEXT NOT NULL, UNIQUE (idempotency_key, status)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO broker_order_records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "old-record",
+                "rebalance-1",
+                "key1",
+                "A",
+                "US.SPY",
+                "BUY",
+                1.0,
+                "PARTIALLY_FILLED",
+                "order-1",
+                '{"dealt_qty": 0.25}',
+                "2026-08-11T00:00:00+00:00",
+            ),
+        )
+    ledger = ShadowLedger(path)
+    ledger.migrate()
+    assert ledger.record_broker_order_event(
+        "rebalance-1",
+        "key1",
+        "A",
+        "US.SPY",
+        "BUY",
+        1.0,
+        "PARTIALLY_FILLED",
+        "order-1",
+        {"dealt_qty": 0.5},
+    )
+    assert len(ledger.rows("broker_order_records")) == 2
 
 
 def test_trade_api_is_confined_to_simulate_gateway_and_unlock_is_absent():

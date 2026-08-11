@@ -1094,7 +1094,7 @@ def robot_comparison(data: dict, defensive_factor: dict, risk_parity: dict, mult
 def safety_records(multi: dict) -> None:
     st.title("运行与安全")
     st.info("Forward Shadow 与 Moomoo SIMULATE 并行：前者保存策略应有信号、成本后 JPY 净值和机器人归属；后者验证 OpenD 下单、拒单、碎股、成交与持仓同步。")
-    st.write("Moomoo SIMULATE：已获得单独批准，但必须在服务器命令行通过启用变量、独立模拟 Kill switch 和确认口令三重门控。网页没有启用或下单按钮。")
+    st.write("Moomoo SIMULATE：执行代码已实现，但当前仍未获得执行批准并保持关闭。未来必须经单独批准，并在服务器命令行通过启用变量、独立模拟 Kill switch 和确认口令三重门控；网页没有启用或下单按钮。")
     st.caption("REAL Execution Scope 仍永久禁用；不存在 REAL 适配器，不调用交易解锁。")
     st.subheader("风险决策")
     if multi["risk"].empty:

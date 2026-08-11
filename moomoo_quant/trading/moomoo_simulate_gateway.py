@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -108,8 +109,26 @@ class OpenDSimulateGateway:
 
     trading_environment = SIMULATE_ENVIRONMENT
 
-    def __init__(self, configured_account_id: str = config.MOOMOO_SIMULATE_ACC_ID):
-        self.configured_account_id = configured_account_id.strip()
+    def __init__(
+        self,
+        configured_account_id: str | None = None,
+        *,
+        enabled: bool | None = None,
+        kill_switch: bool | None = None,
+    ):
+        account_id = config.MOOMOO_SIMULATE_ACC_ID if configured_account_id is None else configured_account_id
+        self.configured_account_id = account_id.strip()
+        self.enabled = config.MOOMOO_SIMULATE_ENABLED if enabled is None else enabled
+        self.kill_switch = config.MOOMOO_SIMULATE_KILL_SWITCH if kill_switch is None else kill_switch
+
+    def _require_read_access(self) -> None:
+        if not self.enabled:
+            raise SimulateSafetyError("MOOMOO_SIMULATE_ENABLED=false; OpenD paper access is disabled")
+
+    def _require_submit_access(self) -> None:
+        self._require_read_access()
+        if self.kill_switch:
+            raise SimulateSafetyError("MOOMOO_SIMULATE_KILL_SWITCH=true; paper submission is disabled")
 
     @contextmanager
     def _context(self) -> Iterator[tuple[object, dict]]:
@@ -159,6 +178,7 @@ class OpenDSimulateGateway:
         return candidates[0]
 
     def preflight(self) -> SimulatePreflight:
+        self._require_read_access()
         with self._context() as (context, sdk):
             account = self._select_account(context, sdk)
             ret, assets = context.accinfo_query(
@@ -213,12 +233,22 @@ class OpenDSimulateGateway:
         trading_environment: object,
         idempotency_key: str,
     ) -> dict:
+        self._require_submit_access()
         if trading_environment != SIMULATE_ENVIRONMENT:
             raise SimulateSafetyError("Gateway accepts only the fixed SIMULATE environment")
         if symbol not in config.MOOMOO_SIMULATE_ALLOWED_SYMBOLS:
             raise SimulateSafetyError(f"Symbol is not allowlisted: {symbol}")
         if side not in {"BUY", "SELL"}:
             raise SimulateSafetyError("Only long-position BUY and SELL are allowed")
+        if (
+            not math.isfinite(quantity)
+            or quantity <= 0
+            or quantity > 10_000
+            or abs(quantity / config.OPERATIONAL_QUANTITY_STEP - round(quantity / config.OPERATIONAL_QUANTITY_STEP)) > 1e-7
+        ):
+            raise SimulateSafetyError("Quantity must be positive, bounded, and aligned to the configured step")
+        if not idempotency_key:
+            raise SimulateSafetyError("An idempotency key is mandatory")
         remark = f"mq:{idempotency_key[:20]}"
         with self._context() as (context, sdk):
             account = self._select_account(context, sdk)
@@ -234,6 +264,8 @@ class OpenDSimulateGateway:
             matches = recent[recent["remark"] == remark] if not recent.empty else recent
             if not matches.empty:
                 return _order_response(matches.iloc[-1].to_dict(), account)
+            if side == "SELL":
+                self._require_sellable_long_position(context, sdk, account, symbol, quantity)
             ret, data = context.place_order(
                 price=0.01,
                 qty=float(quantity),
@@ -255,7 +287,41 @@ class OpenDSimulateGateway:
         row = data.iloc[0].to_dict() if not data.empty else {}
         return _order_response(row, account)
 
+    @staticmethod
+    def _require_sellable_long_position(
+        context,
+        sdk: dict,
+        account: SimulateAccount,
+        symbol: str,
+        quantity: float,
+    ) -> None:
+        ret, positions = context.position_list_query(
+            code=symbol,
+            trd_env=sdk["TrdEnv"].SIMULATE,
+            acc_id=account.account_id,
+            refresh_cache=True,
+            position_market=sdk["TrdMarket"].US,
+            currency=sdk["Currency"].USD,
+        )
+        positions = _require_ok(ret, positions, "sellable positions", sdk["RET_OK"])
+        required_columns = {"code", "position_side", "can_sell_qty"}
+        if positions.empty or not required_columns.issubset(positions.columns):
+            raise SimulateSafetyError(f"No sellable LONG position is available for {symbol}")
+        normalized_side = positions["position_side"].map(
+            lambda value: str(value).upper().rsplit(".", 1)[-1]
+        )
+        long_rows = positions[(positions["code"] == symbol) & (normalized_side == "LONG")]
+        if long_rows.empty:
+            raise SimulateSafetyError(f"No sellable LONG position is available for {symbol}")
+        available = float(pd.to_numeric(long_rows["can_sell_qty"], errors="coerce").fillna(0.0).sum())
+        if available + 1e-9 < quantity:
+            raise SimulateSafetyError(
+                f"SELL would exceed the current sellable LONG quantity for {symbol}: "
+                f"requested={quantity}, available={available}"
+            )
+
     def query_simulated_order(self, order_id: str) -> dict:
+        self._require_read_access()
         with self._context() as (context, sdk):
             account = self._select_account(context, sdk)
             ret, data = context.order_list_query(
