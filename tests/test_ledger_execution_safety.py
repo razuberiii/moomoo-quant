@@ -11,7 +11,7 @@ from moomoo_quant.multi_strategy.bootstrap import initialize_multi_strategy_ledg
 from moomoo_quant.multi_strategy.execution import ExecutionDisabledError, ProposedOrderService
 from moomoo_quant.multi_strategy.ledger import ShadowLedger
 from moomoo_quant.multi_strategy.models import (
-    LifecycleStage, MarketPrice, RiskDecision, RiskStatus, TargetRequest,
+    LifecycleStage, MarketPrice, RiskDecision, RiskStatus, StrategyDefinition, TargetRequest,
 )
 from moomoo_quant.multi_strategy.portfolio import aggregate_targets
 
@@ -29,6 +29,53 @@ def test_ledger_restart_is_idempotent(tmp_path):
     ledger = initialize_multi_strategy_ledger(path)
     assert len(ledger.rows("strategy_accounts")) == 2
     assert len(ledger.rows("migration_events")) == 1
+
+
+def test_immutable_admission_can_fund_a_pristine_existing_research_account_once(tmp_path):
+    path = tmp_path / "ledger.db"
+    ledger = ShadowLedger(path)
+    ledger.migrate()
+    ledger.register_strategy(
+        StrategyDefinition(config.DEFENSIVE_FACTOR_STRATEGY_ID, "Quality Low Vol", "2", "JPY"),
+        config.PORTFOLIO_ID,
+        0.0,
+        LifecycleStage.RESEARCH,
+        "RESEARCH_REJECTED",
+    )
+    migrated = initialize_multi_strategy_ledger(path, include_research_slots=True)
+    account = migrated.strategy_account(config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
+    assert account["allocated_capital_jpy"] == 100_000
+    assert account["cash_jpy"] == 100_000
+    transitions = [
+        row for row in migrated.rows("lifecycle_events")
+        if row["strategy_id"] == config.DEFENSIVE_FACTOR_STRATEGY_ID
+        and row["to_stage"] == LifecycleStage.SHADOW.value
+    ]
+    assert len(transitions) == 1
+    assert transitions[0]["from_stage"] == LifecycleStage.RESEARCH.value
+    assert transitions[0]["approved_by"] == "ADMISSION_POLICY"
+    restarted = initialize_multi_strategy_ledger(path, include_research_slots=True)
+    account = restarted.strategy_account(config.DEFENSIVE_FACTOR_STRATEGY_ID, "2")
+    assert account["cash_jpy"] == 100_000
+    assert len([
+        row for row in restarted.rows("lifecycle_events")
+        if row["strategy_id"] == config.DEFENSIVE_FACTOR_STRATEGY_ID
+        and row["to_stage"] == LifecycleStage.SHADOW.value
+    ]) == 1
+
+
+def test_restart_preserves_funded_strategy_runtime_status(tmp_path):
+    path = tmp_path / "ledger.db"
+    ledger = initialize_multi_strategy_ledger(path, include_research_slots=True)
+    account = ledger.strategy_account(config.TREND_STRATEGY_ID, "1")
+    with ledger.connect() as conn:
+        conn.execute(
+            "UPDATE strategy_accounts SET status=? WHERE account_id=?",
+            ("RECONCILED", account["account_id"]),
+        )
+
+    restarted = initialize_multi_strategy_ledger(path, include_research_slots=True)
+    assert restarted.strategy_account(config.TREND_STRATEGY_ID, "1")["status"] == "RECONCILED"
 
 
 def test_legacy_baseline_does_not_create_fill(tmp_path):

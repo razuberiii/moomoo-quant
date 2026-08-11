@@ -311,7 +311,10 @@ def run_shadow_cycle(
         inserted = ledger.apply_virtual_rebalance(
             signal["signal_id"], signal["strategy_id"], signal["strategy_version"],
             fill_date.date().isoformat(), opens, float(fill_row["exec_usdjpy"]),
-            config.SLIPPAGE_BPS, config.RISK_PARITY_V1["fx_conversion_cost_bps"],
+            config.SLIPPAGE_BPS,
+            0.0,
+            config.OPERATIONAL_QUANTITY_STEP,
+            config.OPERATIONAL_FX_FEE_JPY_PER_USD,
         )
         if inserted:
             result["virtual_fills"] += 1

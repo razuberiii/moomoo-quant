@@ -4,6 +4,7 @@ import pandas as pd
 
 from .. import config
 from .defensive_factor import run_defensive_factor_v2
+from .executable_replay import run_operational_replay
 from .risk_parity import run_risk_parity_v1
 
 
@@ -26,4 +27,10 @@ def run_research_suite() -> dict:
     risk_parity = run_risk_parity_v1()
     correlation = _correlation_matrix()
     correlation.to_csv(config.RESULTS_DIR / "strategy_correlation_matrix.csv")
-    return {"defensive_factor": defensive_factor, "risk_parity": risk_parity, "correlation": correlation}
+    operational = run_operational_replay(save=True)
+    return {
+        "defensive_factor": defensive_factor,
+        "risk_parity": risk_parity,
+        "correlation": correlation,
+        "operational": operational,
+    }

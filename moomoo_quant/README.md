@@ -135,13 +135,15 @@ python -m moomoo_quant.main multi-strategy-init
 python -m pytest -q
 ```
 
-运行层只聚合获得预算的机器人；研究拒绝策略继续占用研究槽位，但不贡献持仓：
+运行层只聚合获得不可变准入记录和预算的机器人；研究拒绝策略继续占用研究槽位，但不贡献持仓：
 
 - Robot A — `JPY Multi-Asset Trend v1`：JPY 计价的时间序列趋势，月频，预算 ¥100,000。v1 参数保持冻结。
-- Robot B — `US Quality & Low Volatility v2`：QUAL / USMV 各 50% 的长期股票因子配置，半年再平衡，当前预算 ¥0。
+- Robot B — `US Quality & Low Volatility v2`：QUAL / USMV 各 50% 的长期股票因子配置，半年再平衡，预算 ¥100,000。
 - Robot C — `JPY Unlevered Risk Parity v1`：SPY / GLD / IEF 的 JPY 逆波动配置，月频，预算 ¥100,000。v1 参数保持冻结。
 
-Robot B 不使用 A 的 momentum / SMA 信号，也不使用 C 的逆波动动态权重。不可变首跑档案曾记录为通过；修复完整月末和资产缓存隔离后，使用当前 OpenD 可重新获取的数据从 2013-10-30 重跑，最大回撤比同期 SPY JPY 差约 0.015 个百分点，因此预注册回撤门槛未通过。参数没有修改，当前状态为 `RESEARCH_REJECTED`，预算为 ¥0，也不会加载 Factor 行情进入生产 Runner。
+Robot B 不使用 A 的 momentum / SMA 信号，也不使用 C 的逆波动动态权重。当前可复现结果只没有改善同期 SPY JPY 最大回撤；统一准入 v1 将 benchmark 相对表现归为组合警告，而不是数据/成本/可执行性硬失败，因此 B 为 `SHADOW_READY`。准入决定保存在 `results/admissions/`，日常重跑只能更新监控结果，不能自动撤销预算或改变生命周期。
+
+运行看板的 headline 绩效来自独立的可执行净回放，不覆盖 A/C 冻结研究版本。统一假设为每个机器人 ¥100,000、Moomoo Japan Basic 佣金、单边 5 bps 滑点、每次自动换汇 ¥0.25 / USD、0.001 股数量步长，并保留无法投入的现金。共同区间三机器人组合的结果也由这些净曲线计算；税务因投资者和账户而异，不混入策略层交易回报。
 
 获得预算的机器人由独立虚拟账户记录资金、持仓、信号、成交和净值。Portfolio Manager 只按策略预算聚合相同资产的净目标，Ledger 保留每一份持仓的策略归属，因此一个机器人退出不会卖掉另一个机器人拥有的份额。
 
@@ -152,9 +154,9 @@ Robot B 不使用 A 的 momentum / SMA 信号，也不使用 C 的逆波动动�
 - `Mean Reversion v1`：Gross 为正但成本后期望为负。
 - `Stress Pullback Mean Reversion v2`：仅 8 笔，样本与年度分散门槛失败。
 - `US Defensive Multi-Factor v1`：QUAL / VLUE / USMV 版本只未通过相对 SPY JPY 的最大回撤门槛。
-- `US Quality & Low Volatility v2`：当前可复现数据下只未通过相对 SPY JPY 的最大回撤门槛；不可变首跑档案仍保留。
+- `US Quality & Low Volatility v2` 的旧 `RESEARCH_REJECTED` 结果继续作为历史监控档案保留，但不再控制生命周期；统一准入记录为准。
 
-所有失败结果和预注册规格永久保留，但不会占用运行总览的机器人位置。
+所有失败结果和预注册规格永久保留；只有不可变统一准入记录可以让策略进入运行层。
 
 ## 影子账户与每日任务
 

@@ -2,6 +2,6 @@
 
 以 JPY 为基准的个人多策略量化运行项目，使用 moomoo OpenAPI 获取公开市场数据，包含冻结回测、前向影子账户、组合聚合、风险检查和只读 Streamlit 运行控制台。
 
-当前获得运行预算的机器人为 JPY Trend v1 和 JPY Unlevered Risk Parity v1。US Quality & Low Volatility v2 保留为研究拒绝档案，预算为 0。项目不发送模拟或真实订单；交易执行层带有强制安全保护，默认启用 kill switch，并拒绝任何真实交易环境。
+当前 A / B / C 三个 ETF 机器人都通过统一准入并各获 ¥100,000 Forward Shadow 预算。所有运行层收益统一采用 JPY 成本后净口径，计入佣金、滑点、自动换汇成本、0.001 股取整和现金拖累。项目不发送模拟或真实订单；交易执行层带有强制安全保护，默认启用 kill switch，并拒绝任何真实交易环境。
 
 完整安装、运行、安全边界和部署说明见 [项目文档](moomoo_quant/README.md)。

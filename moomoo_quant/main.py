@@ -137,6 +137,7 @@ def cmd_research_suite(_args) -> None:
     logger.info("Quality & Low Volatility v2:\n%s", pformat(result["defensive_factor"]["summary"], sort_dicts=False))
     logger.info("Risk Parity v1:\n%s", pformat(result["risk_parity"]["summary"], sort_dicts=False))
     logger.info("Correlation matrix:\n%s", result["correlation"].to_string())
+    logger.info("Operational NET replay:\n%s", pformat(result["operational"], sort_dicts=False))
     logger.info("Research only. No broker or trading context was opened.")
 
 
