@@ -30,6 +30,7 @@ APPEND_ONLY_TABLES = (
     "migration_events",
     "shadow_run_events",
     "broker_order_records",
+    "simulate_cycle_events",
 )
 
 
@@ -197,6 +198,12 @@ class ShadowLedger:
                     status TEXT NOT NULL, order_id TEXT, details_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS simulate_cycle_events (
+                    event_id TEXT PRIMARY KEY, target_digest TEXT NOT NULL,
+                    cycle_type TEXT NOT NULL, state TEXT NOT NULL,
+                    source_signals_json TEXT NOT NULL, details_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             now = datetime.now(timezone.utc).isoformat()
@@ -245,6 +252,10 @@ class ShadowLedger:
                 )
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, ?)",
+                (now,),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, ?)",
                 (now,),
             )
             for table in APPEND_ONLY_TABLES:
@@ -888,6 +899,52 @@ class ShadowLedger:
             )
             return cursor.rowcount == 1
 
+    def record_simulate_cycle_event(
+        self,
+        target_digest: str,
+        cycle_type: str,
+        state: str,
+        source_signals: list[str],
+        details: dict,
+    ) -> bool:
+        canonical = json.dumps(details, sort_keys=True, default=str)
+        fingerprint = hashlib.sha256(
+            f"{target_digest}|{cycle_type}|{state}|{canonical}".encode("utf-8")
+        ).hexdigest()[:16]
+        event_id = f"simulate-cycle:{target_digest}:{cycle_type}:{state}:{fingerprint}"
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO simulate_cycle_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event_id,
+                    target_digest,
+                    cycle_type,
+                    state,
+                    json.dumps(sorted(source_signals)),
+                    canonical,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def simulate_target_processed(self, target_digest: str) -> bool:
+        terminal_states = ("SUBMITTED", "ALREADY_AT_TARGET", "ORDER_REJECTED")
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM simulate_cycle_events WHERE target_digest=? "
+                "AND state IN (?, ?, ?) LIMIT 1",
+                (target_digest, *terminal_states),
+            ).fetchone()
+            return row is not None
+
+    def has_simulate_bootstrap(self) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM simulate_cycle_events WHERE cycle_type='BOOTSTRAP' "
+                "AND state IN ('SUBMITTED', 'ALREADY_AT_TARGET') LIMIT 1"
+            ).fetchone()
+            return row is not None
+
     def rows(self, table: str) -> list[dict]:
         allowed = {
             "strategy_definitions", "strategy_accounts", "lifecycle_events",
@@ -896,6 +953,7 @@ class ShadowLedger:
             "strategy_positions", "virtual_fills", "equity_snapshots",
             "portfolio_snapshots", "aggregated_targets", "reconciliation_records",
             "shadow_run_events", "broker_order_records", "cash_ledger_entries",
+            "simulate_cycle_events",
         }
         if table not in allowed:
             raise ValueError(f"Table is not available for generic reads: {table}")

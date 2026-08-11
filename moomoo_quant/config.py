@@ -79,7 +79,9 @@ QUANT_ADMIN_MODE = os.environ.get("QUANT_ADMIN_MODE", "false").lower() == "true"
 KILL_SWITCH = os.environ.get("QUANT_KILL_SWITCH", "true").lower() == "true"
 MOOMOO_SIMULATE_ENABLED = os.environ.get("MOOMOO_SIMULATE_ENABLED", "false").lower() == "true"
 MOOMOO_SIMULATE_KILL_SWITCH = os.environ.get("MOOMOO_SIMULATE_KILL_SWITCH", "true").lower() == "true"
+MOOMOO_SIMULATE_AUTO_ENABLED = os.environ.get("MOOMOO_SIMULATE_AUTO_ENABLED", "false").lower() == "true"
 MOOMOO_SIMULATE_ACC_ID = os.environ.get("MOOMOO_SIMULATE_ACC_ID", "").strip()
+SIMULATE_OBSERVATION_DAYS = int(os.environ.get("SIMULATE_OBSERVATION_DAYS", "30"))
 MOOMOO_SIMULATE_ALLOWED_SYMBOLS = frozenset(
     {"US.SPY", "US.QQQ", "US.GLD", "US.IEF", "US.QUAL", "US.USMV"}
 )

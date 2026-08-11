@@ -20,11 +20,11 @@ caches are present, then restart the dashboard. Do not rerun or overwrite a
 frozen first-result file during deployment. The operator's existing Nginx
 authentication choice is not changed by app deploy.
 
-SIMULATE is deliberately not enabled in the recurring daily service. The
-current project has no approval to submit paper orders. Read-only `--preflight`
-and `--sync` may be run as one-shot commands under the same service user;
-`--bootstrap` remains prohibited until the user gives separate explicit
-approval. After such approval it must run during the XNYS regular session and
-still requires both the temporary environment gate and the literal confirmation
-documented in the README. Never add those gates to the Dashboard service or the
-daily timer.
+SIMULATE is deliberately not enabled in the recurring shadow service. The user
+approved one paper bootstrap and a 30-day operational observation on 2026-08-11;
+REAL remains prohibited. Run `--preflight`, then the confirmed `--bootstrap`
+during the XNYS regular session. Only after an accepted bootstrap, install the
+separate `moomoo-quant-simulate.service` and timer plus the root-owned `0600`
+`/etc/moomoo-quant/simulate.env` documented in the README. The auto runner syncs
+every time but submits only for a new combined signal digest. Never add its
+gates to the Dashboard or the existing shadow timer.

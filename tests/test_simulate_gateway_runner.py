@@ -7,10 +7,13 @@ import pytest
 from moomoo_quant import config
 from moomoo_quant.jobs.simulate_runner import (
     _activity_is_owned,
+    _current_requests,
     _reserve_modeled_execution_costs,
+    run_auto,
     run_bootstrap,
     run_preflight,
 )
+from moomoo_quant.multi_strategy.bootstrap import initialize_multi_strategy_ledger
 from moomoo_quant.multi_strategy.ledger import ShadowLedger
 from moomoo_quant.multi_strategy.models import MarketPrice, TargetRequest
 from moomoo_quant.trading.moomoo_simulate_adapter import SimulateSafetyError
@@ -267,3 +270,41 @@ def test_bootstrap_waits_for_market_open_without_submitting(tmp_path, monkeypatc
     )
     assert result["state"] == "WAITING_MARKET_OPEN"
     assert gateway.calls == 1
+
+
+def test_simulate_cycle_ledger_marks_only_terminal_targets_processed(tmp_path):
+    ledger = ShadowLedger(tmp_path / "ledger.db")
+    ledger.migrate()
+    ledger.record_simulate_cycle_event("digest-1", "AUTO", "WAITING_MARKET_OPEN", ["signal-a"], {})
+    assert not ledger.simulate_target_processed("digest-1")
+    ledger.record_simulate_cycle_event("digest-1", "BOOTSTRAP", "SUBMITTED", ["signal-a"], {})
+    assert ledger.simulate_target_processed("digest-1")
+    assert ledger.has_simulate_bootstrap()
+
+
+def test_auto_requires_accepted_bootstrap_before_touching_opend(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "LEDGER_PATH", tmp_path / "ledger.db")
+    monkeypatch.setattr(config, "MOOMOO_SIMULATE_ENABLED", True)
+    monkeypatch.setattr(config, "MOOMOO_SIMULATE_KILL_SWITCH", False)
+    monkeypatch.setattr(config, "MOOMOO_SIMULATE_AUTO_ENABLED", True)
+    gateway = PreflightGateway()
+    assert run_auto(gateway)["state"] == "NEEDS_BOOTSTRAP"
+    assert gateway.calls == 0
+
+
+def test_current_requests_switches_to_new_forward_signal(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "LEDGER_PATH", tmp_path / "ledger.db")
+    ledger = initialize_multi_strategy_ledger(include_research_slots=True)
+    signal_id, inserted = ledger.record_signal(
+        config.TREND_STRATEGY_ID,
+        "1",
+        "2026-08-31",
+        {"test": "new-month-end"},
+        {"US.GLD": 1.0},
+        100_000.0,
+        "forward test signal",
+    )
+    assert inserted
+    request = next(item for item in _current_requests(ledger) if item.strategy_id == config.TREND_STRATEGY_ID)
+    assert request.signal_id == signal_id
+    assert request.target_weights == {"US.GLD": 1.0}

@@ -2,7 +2,7 @@ import json
 import math
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -70,6 +70,7 @@ def load_multi_strategy_data() -> dict:
     keys = (
         "strategies", "lifecycle", "risk", "proposals", "migrations", "signals",
         "fills", "equity", "positions", "reconciliations", "runner_events", "broker_orders",
+        "allocations", "portfolio_snapshots", "aggregated_targets", "simulate_cycles",
     )
     output = {key: pd.DataFrame() for key in keys}
     if not config.LEDGER_PATH.exists():
@@ -89,6 +90,10 @@ def load_multi_strategy_data() -> dict:
             ("reconciliations", "reconciliation_records"),
             ("runner_events", "shadow_run_events"),
             ("broker_orders", "broker_order_records"),
+            ("allocations", "target_allocations"),
+            ("portfolio_snapshots", "portfolio_snapshots"),
+            ("aggregated_targets", "aggregated_targets"),
+            ("simulate_cycles", "simulate_cycle_events"),
         ):
             try:
                 output[key] = pd.read_sql_query(f"SELECT * FROM {table}", connection)
@@ -683,7 +688,10 @@ def portfolio_overview(
     risk_parity: dict,
 ) -> None:
     st.title("运行总览")
-    st.warning("当前为 Forward Shadow。Kill switch 开启；不连接交易账户，不发送 SIMULATE 或 REAL 订单。")
+    if multi["broker_orders"].empty:
+        st.warning("Forward Shadow 正常；Moomoo SIMULATE 观察尚未完成首次建仓。REAL 永久禁用。")
+    else:
+        st.info("Moomoo SIMULATE 观察已开始；Forward Shadow 继续并行记录预期结果。REAL 永久禁用。")
     accounts = multi["strategies"]
     allocated, total_equity, funded_count = runtime_portfolio_totals(
         accounts,
@@ -697,7 +705,7 @@ def portfolio_overview(
     metrics[2].metric("前向影子收益", f"{total_equity / allocated - 1:.2%}" if allocated else "—")
     metrics[3].metric("运行机器人", f"{funded_count} / 3")
     status_cols = st.columns(2)
-    status_cols[0].metric("Kill switch", "开启")
+    status_cols[0].metric("模拟观察", "尚未开始" if multi["broker_orders"].empty else "运行中")
     status_cols[1].metric("数据更新时间", date_text(data["manifest"].get("market_data_last_date")))
 
     portfolio = operational_replay_data.get("portfolio", {})
@@ -1091,10 +1099,180 @@ def robot_comparison(data: dict, defensive_factor: dict, risk_parity: dict, mult
         st.plotly_chart(figure, width="stretch")
 
 
+def _json_value(value, fallback):
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return fallback
+    try:
+        return json.loads(value) if isinstance(value, str) else value
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
+def decision_and_orders(data: dict, multi: dict, defensive_factor: dict, risk_parity: dict) -> None:
+    st.title("决策与订单")
+    st.caption("完整链路：机器人目标 → Portfolio Manager 合并 → Risk Manager → 拟议单 → Moomoo SIMULATE → 成交与持仓对账。网页只读；REAL 永久禁用。")
+
+    terminal_broker = {"REJECTED", "CANCELLED"}
+    serious_reconciliation = {"MISMATCH", "FOREIGN_ACTIVITY"}
+    starts = []
+    if not multi["broker_orders"].empty:
+        starts.append(pd.to_datetime(multi["broker_orders"]["created_at"], utc=True).min())
+    if not multi["simulate_cycles"].empty:
+        accepted = multi["simulate_cycles"][
+            multi["simulate_cycles"]["state"].isin(["SUBMITTED", "ALREADY_AT_TARGET"])
+        ]
+        if not accepted.empty:
+            starts.append(pd.to_datetime(accepted["created_at"], utc=True).min())
+    start = min(starts) if starts else None
+    now = pd.Timestamp.now(tz="UTC")
+    observation_days = max(config.SIMULATE_OBSERVATION_DAYS, 1)
+    elapsed = min(max((now.normalize() - start.normalize()).days + 1, 0), observation_days) if start else 0
+    rejected_orders = 0 if multi["broker_orders"].empty else int(
+        multi["broker_orders"]["status"].isin(terminal_broker).sum()
+    )
+    bad_reconciliations = 0 if multi["reconciliations"].empty else int(
+        multi["reconciliations"]["status"].isin(serious_reconciliation).sum()
+    )
+    failures = rejected_orders + bad_reconciliations
+    metrics = st.columns(5)
+    metrics[0].metric("观察状态", "未开始" if not start else ("需人工复核" if failures else f"观察中 {elapsed}/{observation_days} 天"))
+    metrics[1].metric("开始时间", "—" if not start else start.tz_convert("Asia/Tokyo").strftime("%Y-%m-%d %H:%M JST"))
+    metrics[2].metric("严重异常", str(failures))
+    metrics[3].metric("最终订单事件", str(len(multi["broker_orders"])))
+    metrics[4].metric("REAL", "永久禁用")
+    if start:
+        st.progress(elapsed / observation_days, text=f"30 天运行观察：第 {elapsed} 天；结束后仍需单独人工审批，系统不会自动进入实盘。")
+    else:
+        st.info("等待部署服务器完成只读 preflight 和一次性 SIMULATE bootstrap；这里不会从网页触发建仓。")
+
+    st.subheader("1 · 机器人最新决策")
+    current = data["current"].iloc[-1]
+    factor = defensive_factor.get("summary", {}).get("latest_target", {})
+    parity = risk_parity.get("summary", {}).get("latest_target", {})
+    baselines = (
+        (config.TREND_STRATEGY_ID, "1", "Robot A · 趋势", str(current["signal_date"]), {s: float(current[f"{s}_weight"]) for s in ("SPY", "QQQ", "GLD", "IEF")}),
+        (config.DEFENSIVE_FACTOR_STRATEGY_ID, "2", "Robot B · 质量低波动", str(factor.get("signal_date", "—")), {s: float(factor.get(f"{s}_weight", 0)) for s in ("QUAL", "USMV")}),
+        (config.RISK_PARITY_STRATEGY_ID, "1", "Robot C · 风险平价", str(parity.get("signal_date", "—")), {s: float(parity.get(f"{s}_weight", 0)) for s in ("SPY", "GLD", "IEF")}),
+    )
+    decision_rows = []
+    for strategy_id, version, name, signal_date, weights in baselines:
+        signal_id = f"simulate-baseline:{strategy_id}:v{version}:{signal_date}"
+        explanation = "正式研究结果中的当前冻结目标"
+        if not multi["signals"].empty:
+            candidates = multi["signals"][(multi["signals"]["strategy_id"] == strategy_id) & (multi["signals"]["strategy_version"].astype(str) == version)]
+            if not candidates.empty:
+                latest = candidates.sort_values(["signal_date", "created_at"]).iloc[-1]
+                if str(latest["signal_date"]) > signal_date:
+                    signal_id, signal_date = str(latest["signal_id"]), str(latest["signal_date"])
+                    explanation = str(latest["explanation"])
+                    allocations = multi["allocations"][multi["allocations"]["signal_id"] == signal_id]
+                    weights = {str(row["symbol"]).removeprefix("US."): float(row["target_weight"]) for _, row in allocations.iterrows()}
+        account = _account_row(multi, strategy_id, version)
+        decision_rows.append({
+            "机器人": name,
+            "预算（日元）": float(account.get("allocated_capital_jpy", 0)),
+            "信号日期": signal_date,
+            "目标": "、".join(f"{symbol} {weight:.1%}" for symbol, weight in weights.items() if weight > 0) or "JPY Cash 100%",
+            "信号 ID": signal_id,
+            "决策说明": explanation,
+        })
+    st.dataframe(pd.DataFrame(decision_rows), hide_index=True, width="stretch", column_config={"预算（日元）": st.column_config.NumberColumn(format="¥%.0f")})
+
+    st.subheader("2 · Portfolio Manager 合并目标")
+    if multi["aggregated_targets"].empty:
+        st.info("尚无 SIMULATE 合并快照；一次性 bootstrap 会生成。")
+    else:
+        latest_snapshot = multi["aggregated_targets"].sort_values("created_at").iloc[-1]["snapshot_id"]
+        targets = multi["aggregated_targets"][multi["aggregated_targets"]["snapshot_id"] == latest_snapshot].copy()
+        targets["机器人贡献"] = targets["contributions_json"].map(
+            lambda raw: "、".join(
+                f"{item.get('strategy_id', '?')} ¥{float(item.get('target_notional_jpy', 0)):,.0f}"
+                for item in _json_value(raw, [])
+            )
+        )
+        targets = targets.rename(columns={
+            "symbol": "标的", "target_quantity": "目标数量", "current_quantity": "模拟账户当前数量",
+            "proposed_net_change": "需要净变化", "target_notional_jpy": "目标金额（日元）",
+        })
+        st.caption(f"最新组合快照：{latest_snapshot}")
+        st.dataframe(targets[["标的", "目标数量", "模拟账户当前数量", "需要净变化", "目标金额（日元）", "机器人贡献"]], hide_index=True, width="stretch")
+
+    st.subheader("3 · Risk Manager 最终判断")
+    if multi["risk"].empty:
+        st.info("尚无风险判断。")
+    else:
+        latest_risk = multi["risk"].sort_values("checked_at", ascending=False).iloc[0]
+        reasons = _json_value(latest_risk.get("reasons_json"), [])
+        status = str(latest_risk["status"])
+        (st.success if status == "APPROVED_FOR_SIMULATE" else st.error)(
+            f"{STATUS_NAMES.get(status, status)} · {latest_risk.get('scope', '历史记录')} · " + ("无拒绝原因" if not reasons else "；".join(reasons))
+        )
+        st.caption(f"检查时间：{latest_risk['checked_at']} · 输入快照：{latest_risk['input_snapshot_id']} · 风险策略：{latest_risk['risk_policy_version']}")
+
+    st.subheader("4 · 拟议订单（总管计算结果）")
+    if multi["proposals"].empty:
+        st.info("尚无拟议订单。")
+    else:
+        proposals = multi["proposals"].sort_values("created_at", ascending=False).copy()
+        proposals = proposals.rename(columns={
+            "symbol": "标的", "side": "方向", "theoretical_quantity": "数量",
+            "estimated_notional_jpy": "估算金额（日元）", "estimated_commission_jpy": "手续费（日元）",
+            "estimated_slippage_jpy": "滑点（日元）", "estimated_fx_cost_jpy": "换汇成本（日元）",
+            "status": "状态", "created_at": "生成时间",
+        })
+        st.dataframe(proposals[["标的", "方向", "数量", "估算金额（日元）", "手续费（日元）", "滑点（日元）", "换汇成本（日元）", "状态", "生成时间", "idempotency_key"]], hide_index=True, width="stretch")
+
+    st.subheader("5 · Moomoo SIMULATE 最终订单与成交")
+    if multi["broker_orders"].empty:
+        st.info("尚无最终模拟订单。")
+    else:
+        rows = []
+        for _, order in multi["broker_orders"].sort_values("created_at", ascending=False).iterrows():
+            details = _json_value(order.get("details_json"), {})
+            rows.append({
+                "时间": order["created_at"], "订单 ID": order.get("order_id") or "—", "标的": order["symbol"],
+                "方向": order["side"], "委托数量": float(order["quantity"]), "系统状态": order["status"],
+                "券商状态": details.get("broker_status", details.get("order_status", "—")),
+                "成交数量": float(details.get("dealt_qty", 0) or 0), "成交均价": float(details.get("dealt_avg_price", 0) or 0),
+                "错误信息": details.get("last_err_msg") or "—", "幂等键": order["idempotency_key"],
+            })
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    st.subheader("6 · 模拟账户当前持仓与对账")
+    paper_snapshot = None
+    if not multi["reconciliations"].empty:
+        for _, row in multi["reconciliations"].sort_values("checked_at", ascending=False).iterrows():
+            details = _json_value(row.get("details_json"), {})
+            if "positions" in details:
+                paper_snapshot = (row, details)
+                break
+    if paper_snapshot is None:
+        st.info("尚无包含模拟账户持仓的 preflight/sync 快照。")
+    else:
+        row, details = paper_snapshot
+        account_cols = st.columns(3)
+        account_cols[0].metric("模拟账户资产（USD）", f"${float(details.get('total_assets_usd', 0)):,.2f}")
+        account_cols[1].metric("模拟账户现金（USD）", f"${float(details.get('cash_usd', 0)):,.2f}")
+        account_cols[2].metric("对账状态", str(row["status"]))
+        positions = pd.DataFrame(details.get("positions", []))
+        if positions.empty:
+            st.write("当前模拟账户无持仓。")
+        else:
+            st.dataframe(positions, hide_index=True, width="stretch")
+        st.caption(f"账户指纹：{details.get('account_fingerprint', '—')} · 检查时间：{row['checked_at']}（不显示真实账户号）")
+
+    st.subheader("7 · 模拟运行事件")
+    if multi["simulate_cycles"].empty:
+        st.info("尚无自动观察事件。")
+    else:
+        cycles = multi["simulate_cycles"].sort_values("created_at", ascending=False).drop(columns=["details_json"], errors="ignore")
+        st.dataframe(cycles, hide_index=True, width="stretch")
+
+
 def safety_records(multi: dict) -> None:
     st.title("运行与安全")
     st.info("Forward Shadow 与 Moomoo SIMULATE 并行：前者保存策略应有信号、成本后 JPY 净值和机器人归属；后者验证 OpenD 下单、拒单、碎股、成交与持仓同步。")
-    st.write("Moomoo SIMULATE：执行代码已实现，但当前仍未获得执行批准并保持关闭。未来必须经单独批准，并在服务器命令行通过启用变量、独立模拟 Kill switch 和确认口令三重门控；网页没有启用或下单按钮。")
+    st.write("Moomoo SIMULATE：用户已批准一次建仓和 30 天观察；仅由服务器命令行与独立 timer 执行。网页没有启用或下单按钮。")
     st.caption("REAL Execution Scope 仍永久禁用；不存在 REAL 适配器，不调用交易解锁。")
     st.subheader("风险决策")
     if multi["risk"].empty:
@@ -1105,7 +1283,7 @@ def safety_records(multi: dict) -> None:
         st.dataframe(risk, hide_index=True, width="stretch")
     st.subheader("拟议订单")
     if multi["proposals"].empty:
-        st.info("当前没有拟议订单。Kill switch 开启，初始基准信号也不会追溯生成。")
+        st.info("当前没有拟议订单；等待一次性 SIMULATE bootstrap 或新的机器人信号。")
     else:
         proposals = multi["proposals"].sort_values("created_at", ascending=False).copy()
         proposals["status"] = proposals["status"].map(lambda value: STATUS_NAMES.get(value, value))
@@ -1152,7 +1330,7 @@ def safety_records(multi: dict) -> None:
 
 
 st.sidebar.title("JPY 量化控制台")
-page = st.sidebar.radio("页面", ("运行总览", "机器人详情", "运行策略比较", "合并理论持仓", "运行与安全"))
+page = st.sidebar.radio("页面", ("运行总览", "机器人详情", "运行策略比较", "合并理论持仓", "决策与订单", "运行与安全"))
 if config.QUANT_ADMIN_MODE:
     if st.sidebar.button("重新运行回测", type="secondary", width="stretch"):
         with st.spinner("正在更新市场数据并重建历史结果……"):
@@ -1164,7 +1342,7 @@ if config.QUANT_ADMIN_MODE:
     st.sidebar.caption("管理员模式已开启。")
 else:
     st.sidebar.caption("生产只读模式")
-st.sidebar.caption("不显示账户资料，不连接交易环境，不发送订单。")
+st.sidebar.caption("只读看板；可展示服务器端 SIMULATE 决策和订单。REAL 永久禁用。")
 
 try:
     dashboard_data = load_dashboard_data()
@@ -1198,5 +1376,12 @@ elif page == "运行策略比较":
     robot_comparison(dashboard_data, defensive_factor_v2_data, risk_parity_data, multi_strategy_data)
 elif page == "合并理论持仓":
     merged_holdings(dashboard_data, multi_strategy_data, defensive_factor_v2_data, risk_parity_data)
+elif page == "决策与订单":
+    decision_and_orders(
+        dashboard_data,
+        multi_strategy_data,
+        defensive_factor_v2_data,
+        risk_parity_data,
+    )
 else:
     safety_records(multi_strategy_data)

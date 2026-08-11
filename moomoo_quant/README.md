@@ -170,7 +170,7 @@ python -m moomoo_quant.jobs.shadow_runner --run-once
 
 Forward Shadow 与 Moomoo SIMULATE 必须并行保留：Shadow 是确定性的预期账本，记录每个机器人的资金归属、理论成交、佣金/滑点/换汇后的 JPY 净值；SIMULATE 是合并后的券商层执行验证，用来发现账户筛选、碎股、拒单、重复单、成交状态和持仓偏差。三个机器人不会各自下单，Portfolio Manager 只为每个 ETF 发送一张合并净订单。
 
-SIMULATE 默认仍关闭，且拥有独立 Kill switch。当前未获得发送模拟订单的执行批准；除非用户未来另行明确批准，不得运行 `--bootstrap`。第一次只运行只读预检：
+SIMULATE 默认仍关闭，且拥有独立 Kill switch。用户已于 2026-08-11 明确批准一次 SIMULATE 建仓和 30 天观察；这项批准不包含 REAL。部署后先运行只读预检：
 
 ```bash
 MOOMOO_SIMULATE_ENABLED=true \
@@ -179,7 +179,7 @@ python -m moomoo_quant.jobs.simulate_runner --preflight
 
 预检必须选中唯一的 active US stock paper account；如果有多个账户，应配置 `MOOMOO_SIMULATE_ACC_ID`。输出和账本只保存不可逆账户指纹，不保存真实账户列表。若模拟账户已有不属于本项目的持仓或订单，bootstrap 会 fail closed。
 
-以下 bootstrap 命令仅记录未来获得单独批准后的操作方式。只有在 XNYS 常规交易时段、行情与 USDJPY 新鲜、预检通过，并同时解除独立模拟 Kill switch 和提供确认口令时才会发送当前 A/B/C 合并建仓单：
+只有在 XNYS 常规交易时段、行情与 USDJPY 新鲜、预检通过，并同时解除独立模拟 Kill switch 和提供确认口令时，下面的命令才会发送当前 A/B/C 合并建仓单。只执行一次：
 
 ```bash
 MOOMOO_SIMULATE_ENABLED=true \
@@ -194,7 +194,24 @@ MOOMOO_SIMULATE_ENABLED=true \
 python -m moomoo_quant.jobs.simulate_runner --sync
 ```
 
-不要把这三个命令放入公网 Dashboard。`EXECUTION_SCOPE` 继续硬拒绝，代码没有 REAL gateway，也不调用交易解锁。
+首次 bootstrap 成功后，安装独立 `moomoo-quant-simulate.timer`。它每天同步券商订单和持仓，但只有组合信号摘要发生变化时才生成新一轮合并净订单；相同信号只处理一次，拒单也不会自动重试风暴。`/etc/moomoo-quant/simulate.env` 必须由 root 创建并设为 `0600`，内容为：
+
+```text
+MOOMOO_SIMULATE_ENABLED=true
+MOOMOO_SIMULATE_KILL_SWITCH=false
+MOOMOO_SIMULATE_AUTO_ENABLED=true
+SIMULATE_OBSERVATION_DAYS=30
+```
+
+如有多个 US 股票模拟账户，再加入 `MOOMOO_SIMULATE_ACC_ID=<id>`。自动入口为：
+
+```bash
+python -m moomoo_quant.jobs.simulate_runner --auto
+```
+
+Dashboard 只读展示机器人信号、组合合并、风险决策、拟议单、Moomoo 模拟订单、成交/持仓对账和 30 天观察进度；不提供网页下单按钮。
+
+不要把这些命令放入公网 Dashboard。`EXECUTION_SCOPE` 继续硬拒绝，代码没有 REAL gateway，也不调用交易解锁。
 
 服务器没有可用 OpenD 时，可只读取现有缓存：
 
@@ -223,4 +240,4 @@ sudo /usr/local/sbin/set-moomoo-dashboard-password
 
 密码输入由 `htpasswd` 隐藏，不写入代码、配置或命令历史。Nginx 配置修改前备份在 `/root/nginx-conf-backups/<timestamp>/`。
 
-当前目标服务器为 x86-64，官方 OpenD 监听 `127.0.0.1:11112`。OpenD 仅供行情任务使用；本项目没有交易账户访问路径。部署细节和回滚步骤见 `docs/deployment.md` 与 `docs/migration_and_rollback.md`。
+当前目标服务器为 x86-64，官方 OpenD 监听 `127.0.0.1:11112`。OpenD 可访问唯一选定的 US SIMULATE 股票账户；REAL gateway、交易解锁和 `TrdEnv.REAL` 仍不存在。部署细节和回滚步骤见 `docs/deployment.md` 与 `docs/migration_and_rollback.md`。
